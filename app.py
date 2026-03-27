@@ -16,6 +16,10 @@ file_cases = st.sidebar.file_uploader("1. Vaka Listesi (Kızamık.xlsx/csv)", ty
 file_pop = st.sidebar.file_uploader("2. Nüfus Verisi (Nüfus.xlsx/csv)", type=["csv", "xlsx"])
 file_vax = st.sidebar.file_uploader("3. Aşı Performansı (KKK.xlsx/csv)", type=["csv", "xlsx"])
 
+# Türkçe Ay İsimleri Sözlüğü (Bilgisayarın dil ayarından bağımsız çalışması için)
+aylar = {1: 'Ocak', 2: 'Şubat', 3: 'Mart', 4: 'Nisan', 5: 'Mayıs', 6: 'Haziran', 
+         7: 'Temmuz', 8: 'Ağustos', 9: 'Eylül', 10: 'Ekim', 11: 'Kasım', 12: 'Aralık'}
+
 # --- 2. HESAPLAMA MOTORU (ETL) ---
 if file_cases and file_pop and file_vax:
     with st.spinner('Veriler işleniyor ve Makine Öğrenmesi algoritması çalıştırılıyor...'):
@@ -25,11 +29,21 @@ if file_cases and file_pop and file_vax:
             df_pop = pd.read_csv(file_pop) if file_pop.name.endswith('.csv') else pd.read_excel(file_pop)
             df_vax = pd.read_csv(file_vax) if file_vax.name.endswith('.csv') else pd.read_excel(file_vax)
 
-            # Vaka Verisini Hazırla (Son 6 Ay İvmesi)
+            # Vaka Tarihlerini İşleme ve Zaman Etiketlerini Oluşturma
             df_cases['Tarih'] = pd.to_datetime(df_cases['Tarih'], errors='coerce')
             latest_date = df_cases['Tarih'].max()
-            six_months_ago = latest_date - pd.DateOffset(months=6)
-            recent_cases = df_cases[df_cases['Tarih'] >= six_months_ago].copy()
+            
+            # Zaman pencereleri (Son 6 ay ve Hedef Ay)
+            six_months_ago = latest_date - pd.DateOffset(months=5) # Kapsayıcı 6 ay için
+            target_date = latest_date + pd.DateOffset(months=1)
+            
+            # Türkçe metinleri hazırlama
+            start_str = f"{aylar[six_months_ago.month]} {six_months_ago.year}"
+            end_str = f"{aylar[latest_date.month]} {latest_date.year}"
+            target_str = f"{aylar[target_date.month]} {target_date.year}"
+
+            # Sadece son 6 ayın vakalarını filtreleme
+            recent_cases = df_cases[df_cases['Tarih'] >= (latest_date - pd.DateOffset(months=6))].copy()
             
             # İlçe Bazlı Vaka İvmesi
             recent_cases['İkamet adresi-İLÇE'] = recent_cases['İkamet adresi-İLÇE'].astype(str).str.strip().str.upper()
@@ -55,7 +69,7 @@ if file_cases and file_pop and file_vax:
             
             # "Tum" (Özet) satırını ve boş ilçeleri sistemden temizleme
             df_clean = df_merged[df_merged['İlçe'].notna()]
-            df_clean = df_clean[(df_clean['İlçe'] != 'TUM') & (df_clean['İlçe'] != 'NAN') & (df_clean['İlçe'] != 'NAN')]
+            df_clean = df_clean[(df_clean['İlçe'] != 'TUM') & (df_clean['İlçe'] != 'NAN')]
             
             # --- RİSK SKORU ALGORİTMASI ---
             max_vuln = df_clean['Korunmasız_Cocuk'].max()
@@ -74,17 +88,19 @@ if file_cases and file_pop and file_vax:
             df_final.columns = ['İlçe', 'Aile Hekimliği Birimi', 'Hedef Nüfus', 'Aşı Hızı (%)', 'Korumasız Çocuk', 'Bölgedeki Aktif Vaka', 'Risk Skoru']
             
             # --- 3. DASHBOARD GÖRSELLEŞTİRME ---
-            st.success("Analiz başarıyla tamamlandı!")
+            st.success("✅ Veri Analizi Başarıyla Tamamlandı!")
+            
+            # YENİ EKLENEN BİLGİ KUTUSU (TARİH VE TAHMİN BİLDİRİMİ)
+            st.info(f"📅 **Analiz Edilen Dönem:** Algoritma, yüklediğiniz dosyalardaki **{start_str} - {end_str}** tarihleri arasındaki taze vakaları baz almıştır.\n\n🎯 **Erken Uyarı Hedefi:** Sistem şu anda **{target_str}** ayı için nerede salgın patlayacağını tahmin ediyor.")
             
             col1, col2, col3 = st.columns(3)
-            col1.metric("Toplam Aktif Vaka (Son 6 Ay)", int(district_momentum['Aktif_Vaka_Son_6Ay'].sum()))
+            col1.metric(f"Toplam Aktif Vaka ({start_str}-{end_str})", int(district_momentum['Aktif_Vaka_Son_6Ay'].sum()))
             col2.metric("İl Geneli Korumasız Çocuk", f"{df_final['Korumasız Çocuk'].sum():,}")
-            # Hata vermemesi için liste boş değilse ilk ilçeyi al
             en_riskli_ilce = df_final.iloc[0]['İlçe'] if not df_final.empty else "Veri Yok"
-            col3.metric("En Riskli İlçe", en_riskli_ilce)
+            col3.metric(f"En Riskli İlçe ({target_str})", en_riskli_ilce)
 
             st.markdown("---")
-            st.subheader("🔴 Acil Müdahale Listesi (En Yüksek Riskli 20 Birim)")
+            st.subheader(f"🔴 Acil Müdahale Listesi ({target_str} Ayı En Yüksek Riskli 20 Birim)")
             
             # Pandas tablosunu renklendirerek gösterme
             def highlight_risk(val):
@@ -98,8 +114,7 @@ if file_cases and file_pop and file_vax:
             col_chart1, col_chart2 = st.columns(2)
             
             with col_chart1:
-                st.subheader("🔥 İlçelere Göre Salgın İvmesi (Son 6 Ay)")
-                # NaN ilçeleri grafikten de çıkaralım
+                st.subheader("🔥 İlçelere Göre Salgın İvmesi")
                 dist_mom_clean = district_momentum[(district_momentum['İlçe'] != 'TUM') & (district_momentum['İlçe'] != 'NAN')]
                 fig1 = px.bar(dist_mom_clean.head(10), x='İlçe', y='Aktif_Vaka_Son_6Ay', color='Aktif_Vaka_Son_6Ay', color_continuous_scale='Reds')
                 st.plotly_chart(fig1, use_container_width=True)
@@ -115,9 +130,9 @@ if file_cases and file_pop and file_vax:
             st.markdown("---")
             csv = df_final.to_csv(index=False).encode('utf-8-sig')
             st.download_button(
-                label="📥 Kırmızı Listeyi Excel (CSV) Olarak İndir",
+                label=f"📥 {target_str} Kırmızı Listesini Excel (CSV) Olarak İndir",
                 data=csv,
-                file_name='Kizamik_Risk_Listesi.csv',
+                file_name=f'Kizamik_Risk_Listesi_{target_str}.csv',
                 mime='text/csv',
             )
 
