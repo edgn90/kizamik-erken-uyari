@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from datetime import timedelta
 
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık Erken Uyarı Sistemi", page_icon="🚨", layout="wide")
@@ -13,9 +12,9 @@ st.markdown("Bu sistem; geçmiş vaka ivmesi ve güncel aşı oranlarını kulla
 st.sidebar.header("📂 Veri Yükleme Paneli")
 st.sidebar.markdown("Lütfen güncel ayın dosyalarını yükleyin.")
 
-file_cases = st.sidebar.file_uploader("1. Vaka Listesi (Kızamık.csv)", type=["csv", "xlsx"])
-file_pop = st.sidebar.file_uploader("2. Nüfus Verisi (Nüfus.csv)", type=["csv", "xlsx"])
-file_vax = st.sidebar.file_uploader("3. Aşı Performansı (KKK.csv)", type=["csv", "xlsx"])
+file_cases = st.sidebar.file_uploader("1. Vaka Listesi (Kızamık.xlsx/csv)", type=["csv", "xlsx"])
+file_pop = st.sidebar.file_uploader("2. Nüfus Verisi (Nüfus.xlsx/csv)", type=["csv", "xlsx"])
+file_vax = st.sidebar.file_uploader("3. Aşı Performansı (KKK.xlsx/csv)", type=["csv", "xlsx"])
 
 # --- 2. HESAPLAMA MOTORU (ETL) ---
 if file_cases and file_pop and file_vax:
@@ -54,19 +53,23 @@ if file_cases and file_pop and file_vax:
             df_merged = pd.merge(df_merged, district_momentum, on='İlçe', how='left')
             df_merged['Aktif_Vaka_Son_6Ay'] = df_merged['Aktif_Vaka_Son_6Ay'].fillna(0)
             
-            # --- RİSK SKORU ALGORİTMASI ---
-            max_vuln = df_merged['Korunmasız_Cocuk'].max()
-            max_cases = df_merged['Aktif_Vaka_Son_6Ay'].max()
+            # "Tum" (Özet) satırını ve boş ilçeleri sistemden temizleme
+            df_clean = df_merged[df_merged['İlçe'].notna()]
+            df_clean = df_clean[(df_clean['İlçe'] != 'TUM') & (df_clean['İlçe'] != 'NAN') & (df_clean['İlçe'] != 'NAN')]
             
-            df_merged['Vuln_Score'] = df_merged['Korunmasız_Cocuk'] / max_vuln if max_vuln > 0 else 0
-            df_merged['Case_Score'] = df_merged['Aktif_Vaka_Son_6Ay'] / max_cases if max_cases > 0 else 0
+            # --- RİSK SKORU ALGORİTMASI ---
+            max_vuln = df_clean['Korunmasız_Cocuk'].max()
+            max_cases = df_clean['Aktif_Vaka_Son_6Ay'].max()
+            
+            df_clean['Vuln_Score'] = df_clean['Korunmasız_Cocuk'] / max_vuln if max_vuln > 0 else 0
+            df_clean['Case_Score'] = df_clean['Aktif_Vaka_Son_6Ay'] / max_cases if max_cases > 0 else 0
             
             # %60 Aşısızlık Yükü + %40 Bulaş İvmesi
-            df_merged['Risk_Skoru'] = ((df_merged['Vuln_Score'] * 0.6) + (df_merged['Case_Score'] * 0.4)) * 100
-            df_merged['Risk_Skoru'] = df_merged['Risk_Skoru'].round(1)
+            df_clean['Risk_Skoru'] = ((df_clean['Vuln_Score'] * 0.6) + (df_clean['Case_Score'] * 0.4)) * 100
+            df_clean['Risk_Skoru'] = df_clean['Risk_Skoru'].round(1)
             
-            # Temizleme ve Sıralama
-            df_final = df_merged[df_merged['Target_Pop'] > 50].sort_values('Risk_Skoru', ascending=False)
+            # Sıralama ve Gösterime Hazırlama
+            df_final = df_clean[df_clean['Target_Pop'] > 50].sort_values('Risk_Skoru', ascending=False)
             df_final = df_final[['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Korunmasız_Cocuk', 'Aktif_Vaka_Son_6Ay', 'Risk_Skoru']]
             df_final.columns = ['İlçe', 'Aile Hekimliği Birimi', 'Hedef Nüfus', 'Aşı Hızı (%)', 'Korumasız Çocuk', 'Bölgedeki Aktif Vaka', 'Risk Skoru']
             
@@ -76,7 +79,9 @@ if file_cases and file_pop and file_vax:
             col1, col2, col3 = st.columns(3)
             col1.metric("Toplam Aktif Vaka (Son 6 Ay)", int(district_momentum['Aktif_Vaka_Son_6Ay'].sum()))
             col2.metric("İl Geneli Korumasız Çocuk", f"{df_final['Korumasız Çocuk'].sum():,}")
-            col3.metric("En Riskli İlçe", df_final.iloc[0]['İlçe'])
+            # Hata vermemesi için liste boş değilse ilk ilçeyi al
+            en_riskli_ilce = df_final.iloc[0]['İlçe'] if not df_final.empty else "Veri Yok"
+            col3.metric("En Riskli İlçe", en_riskli_ilce)
 
             st.markdown("---")
             st.subheader("🔴 Acil Müdahale Listesi (En Yüksek Riskli 20 Birim)")
@@ -93,13 +98,15 @@ if file_cases and file_pop and file_vax:
             col_chart1, col_chart2 = st.columns(2)
             
             with col_chart1:
-                st.subheader("🔥 İlçelere Göre Salgın İvmesi")
-                fig1 = px.bar(district_momentum.head(10), x='İlçe', y='Aktif_Vaka_Son_6Ay', color='Aktif_Vaka_Son_6Ay', color_continuous_scale='Reds')
+                st.subheader("🔥 İlçelere Göre Salgın İvmesi (Son 6 Ay)")
+                # NaN ilçeleri grafikten de çıkaralım
+                dist_mom_clean = district_momentum[(district_momentum['İlçe'] != 'TUM') & (district_momentum['İlçe'] != 'NAN')]
+                fig1 = px.bar(dist_mom_clean.head(10), x='İlçe', y='Aktif_Vaka_Son_6Ay', color='Aktif_Vaka_Son_6Ay', color_continuous_scale='Reds')
                 st.plotly_chart(fig1, use_container_width=True)
                 
             with col_chart2:
                 st.subheader("📉 Aşı Performansı En Düşük İlçeler")
-                ilce_vax = df_merged.groupby('İlçe')['Toplam Aşılama Hızı'].mean().reset_index().sort_values('Toplam Aşılama Hızı').head(10)
+                ilce_vax = df_clean.groupby('İlçe')['Toplam Aşılama Hızı'].mean().reset_index().sort_values('Toplam Aşılama Hızı').head(10)
                 fig2 = px.bar(ilce_vax, x='İlçe', y='Toplam Aşılama Hızı', color='Toplam Aşılama Hızı', color_continuous_scale='RdYlGn')
                 fig2.update_layout(yaxis=dict(range=[0, 100]))
                 st.plotly_chart(fig2, use_container_width=True)
