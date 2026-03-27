@@ -5,8 +5,8 @@ import plotly.express as px
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık Sürveyans ve Uyarı Sistemi", page_icon="🚨", layout="wide")
 
-st.title("🚨 Kızamık Erken Uyarı ve Sürveyans Dashboard'u")
-st.markdown("Bu sistem; operasyonel erken uyarılar üretir ve tarihsel salgın verilerini analiz eder.")
+st.title("🚨 Kızamık Erken Uyarı ve YZ Sürveyans Radarı")
+st.markdown("Bu sistem; vakaların coğrafi koordinatlarını ve üstel sürü bağışıklığı cezalarını kullanarak yüksek hassasiyetli risk tahminleri yapar.")
 
 # --- 1. YÜKLEME MODÜLÜ (SIDEBAR) ---
 st.sidebar.header("📂 Veri Yükleme Paneli")
@@ -22,7 +22,7 @@ aylar = {1: 'Ocak', 2: 'Şubat', 3: 'Mart', 4: 'Nisan', 5: 'Mayıs', 6: 'Haziran
 
 # --- ANA İŞLEYİŞ VE SEKMELER (TABS) ---
 if file_cases and file_pop and file_vax:
-    with st.spinner('Veriler işleniyor...'):
+    with st.spinner('Yapay Zeka Uzamsal Algoritmaları ve Risk Motoru Çalıştırılıyor...'):
         try:
             # Verileri Oku
             df_cases = pd.read_csv(file_cases) if file_cases.name.endswith('.csv') else pd.read_excel(file_cases)
@@ -33,8 +33,13 @@ if file_cases and file_pop and file_vax:
             df_cases['Tarih'] = pd.to_datetime(df_cases['Tarih'], errors='coerce')
             latest_date = df_cases['Tarih'].max()
             
+            # Koordinatları (Lat/Lon) sayısal değere çevir (Harita için)
+            if 'Lat' in df_cases.columns and 'Lon' in df_cases.columns:
+                df_cases['Lat'] = pd.to_numeric(df_cases['Lat'], errors='coerce')
+                df_cases['Lon'] = pd.to_numeric(df_cases['Lon'], errors='coerce')
+
             # Sekmeleri Oluştur
-            tab1, tab2 = st.tabs(["🚨 ERKEN UYARI (Gelecek Ay Tahmini)", "📊 TARİHSEL ANALİZ (4 Yıllık Makro Görünüm)"])
+            tab1, tab2 = st.tabs(["🚨 YZ ERKEN UYARI RADARI (Gelecek Ay Tahmini)", "📊 TARİHSEL ANALİZ (4 Yıllık Makro Görünüm)"])
             
             # ==========================================
             # TAB 1: ERKEN UYARI SİSTEMİ (Operasyonel)
@@ -70,31 +75,65 @@ if file_cases and file_pop and file_vax:
                 df_clean = df_merged[df_merged['İlçe'].notna()]
                 df_clean = df_clean[(df_clean['İlçe'] != 'TUM') & (df_clean['İlçe'] != 'NAN')]
                 
-                # Risk Skoru
+                # --- YENİ YZ RİSK SKORU (SÜRÜ BAĞIŞIKLIĞI CEZALI) ---
                 max_vuln = df_clean['Korunmasız_Cocuk'].max()
                 max_cases = df_clean['Aktif_Vaka_Son_6Ay'].max()
+                
                 df_clean['Vuln_Score'] = df_clean['Korunmasız_Cocuk'] / max_vuln if max_vuln > 0 else 0
                 df_clean['Case_Score'] = df_clean['Aktif_Vaka_Son_6Ay'] / max_cases if max_cases > 0 else 0
-                df_clean['Risk_Skoru'] = ((df_clean['Vuln_Score'] * 0.6) + (df_clean['Case_Score'] * 0.4)) * 100
-                df_clean['Risk_Skoru'] = df_clean['Risk_Skoru'].round(1)
+                
+                # 1. Ham Risk (%50 Aşısız Nüfus Yükü, %50 Aktif Bulaş)
+                df_clean['Ham_Risk'] = ((df_clean['Vuln_Score'] * 0.5) + (df_clean['Case_Score'] * 0.5)) * 100
+                
+                # 2. Üstel Sürü Bağışıklığı Cezası (%95 Altı)
+                # 95'in ne kadar altındaysa (Fark), o kadar katlanarak ceza yer (Fark^1.3)
+                df_clean['Esik_Farki'] = 95 - df_clean['Toplam Aşılama Hızı']
+                df_clean['Esik_Farki'] = df_clean['Esik_Farki'].apply(lambda x: x if x > 0 else 0)
+                df_clean['Ceza_Puani'] = (df_clean['Esik_Farki'] ** 1.3) * 0.4 
+                
+                # 3. Final YZ Skoru (Ham Risk + Ceza)
+                df_clean['Risk_Skoru'] = df_clean['Ham_Risk'] + df_clean['Ceza_Puani']
+                df_clean['Risk_Skoru'] = df_clean['Risk_Skoru'].apply(lambda x: 100 if x > 100 else x).round(1) # Maksimum 100'e sabitle
                 
                 df_final = df_clean[df_clean['Target_Pop'] > 50].sort_values('Risk_Skoru', ascending=False)
                 df_final = df_final[['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Korunmasız_Cocuk', 'Aktif_Vaka_Son_6Ay', 'Risk_Skoru']]
-                df_final.columns = ['İlçe', 'Aile Hekimliği Birimi', 'Hedef Nüfus', 'Aşı Hızı (%)', 'Korumasız Çocuk', 'Bölgedeki Aktif Vaka', 'Risk Skoru']
+                df_final.columns = ['İlçe', 'Aile Hekimliği Birimi', 'Hedef Nüfus', 'Aşı Hızı (%)', 'Korumasız Çocuk', 'Bölgedeki Aktif Vaka', 'YZ Risk Skoru']
                 
                 # Görselleştirme (Tab 1)
-                st.info(f"🎯 **Erken Uyarı Hedefi:** Sistem, **{start_str} - {end_str}** ivmesini kullanarak **{target_str}** ayı için nerede salgın patlayacağını tahmin ediyor.")
+                st.info(f"🎯 **Sürveyans Hedefi:** Sistem, **{start_str} - {end_str}** ivmesini ve sürü bağışıklığı eşiklerini (DSÖ) kullanarak **{target_str}** ayı için acil müdahale noktalarını tespit etti.")
                 
                 col1, col2, col3 = st.columns(3)
                 col1.metric(f"Aktif Vaka ({start_str}-{end_str})", int(district_momentum['Aktif_Vaka_Son_6Ay'].sum()))
                 col2.metric("İl Geneli Korumasız Çocuk", f"{df_final['Korumasız Çocuk'].sum():,}")
-                col3.metric(f"En Riskli İlçe ({target_str})", df_final.iloc[0]['İlçe'] if not df_final.empty else "Veri Yok")
+                col3.metric(f"En Kritik İlçe ({target_str})", df_final.iloc[0]['İlçe'] if not df_final.empty else "Veri Yok")
 
+                # --- YENİ EKLENEN: COĞRAFİ ISI HARİTASI ---
+                st.markdown("---")
+                st.subheader(f"🗺️ Aktif Vaka Kümelenme Radarı ({start_str} - {end_str})")
+                st.markdown("Aşağıdaki harita, son 6 aydaki vakaların GPS koordinatlarını kullanarak **fiziksel bulaş çemberlerini (hotspots)** gösterir. Kırmızı alanlar virüsün fiziksel olarak dolaştığı merkezlerdir.")
+                
+                if 'Lat' in recent_cases.columns and 'Lon' in recent_cases.columns:
+                    map_data = recent_cases.dropna(subset=['Lat', 'Lon'])
+                    if not map_data.empty:
+                        # İstanbul merkezli ısı haritası
+                        fig_map = px.density_mapbox(map_data, lat='Lat', lon='Lon', radius=15,
+                                                    center=dict(lat=41.05, lon=28.97), zoom=9.5,
+                                                    mapbox_style="carto-positron",
+                                                    color_continuous_scale="Inferno")
+                        fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+                        st.plotly_chart(fig_map, use_container_width=True)
+                    else:
+                        st.warning("Son 6 ay vakaları için geçerli koordinat bulunamadı.")
+                else:
+                    st.warning("Yüklenen vaka dosyasında 'Lat' (Enlem) ve 'Lon' (Boylam) sütunları bulunamadı.")
+
+                st.markdown("---")
                 st.subheader(f"🔴 Acil Müdahale Listesi ({target_str} Ayı)")
+                st.markdown("*Not: Aşı Hızı %95'in altındaki birimler sistem tarafından üstel olarak cezalandırılmış ve puanları artırılmıştır.*")
                 def highlight_risk(val):
                     color = '#ff4b4b' if val > 80 else '#ffa500' if val > 60 else ''
                     return f'background-color: {color}'
-                st.dataframe(df_final.head(20).style.applymap(highlight_risk, subset=['Risk Skoru']).format({"Aşı Hızı (%)": "{:.1f}", "Risk Skoru": "{:.1f}"}), use_container_width=True)
+                st.dataframe(df_final.head(20).style.applymap(highlight_risk, subset=['YZ Risk Skoru']).format({"Aşı Hızı (%)": "{:.1f}", "YZ Risk Skoru": "{:.1f}"}), use_container_width=True)
 
             # ==========================================
             # TAB 2: TARİHSEL ANALİZ (Retrospektif)
@@ -114,11 +153,10 @@ if file_cases and file_pop and file_vax:
                 
                 st.markdown("---")
                 
-                # 1. Grafİk: Epi-Curve (Aylık Vaka Eğrisi)
                 st.subheader("📈 4 Yıllık Salgın Eğrisi (Epi-Curve)")
                 df_cases['Yıl_Ay'] = df_cases['Tarih'].dt.to_period('M').astype(str)
                 epi_data = df_cases.groupby('Yıl_Ay').size().reset_index(name='Vaka Sayısı')
-                epi_data = epi_data[epi_data['Yıl_Ay'] != 'NaT'] # Boş tarihleri gizle
+                epi_data = epi_data[epi_data['Yıl_Ay'] != 'NaT']
                 fig_epi = px.line(epi_data, x='Yıl_Ay', y='Vaka Sayısı', markers=True, color_discrete_sequence=['#d62728'])
                 fig_epi.update_traces(line=dict(width=3), marker=dict(size=8))
                 st.plotly_chart(fig_epi, use_container_width=True)
@@ -126,7 +164,6 @@ if file_cases and file_pop and file_vax:
                 col_hist1, col_hist2 = st.columns(2)
                 
                 with col_hist1:
-                    # 2. Grafik: Kümülatif İlçe Yükü
                     st.subheader("📍 En Çok Vaka Çıkan 15 İlçe (Kümülatif)")
                     df_cases['İlçe_Temiz'] = df_cases['İkamet adresi-İLÇE'].astype(str).str.strip().str.upper()
                     dist_cum = df_cases[df_cases['İlçe_Temiz'] != 'NAN']['İlçe_Temiz'].value_counts().reset_index().head(15)
@@ -135,12 +172,9 @@ if file_cases and file_pop and file_vax:
                     st.plotly_chart(fig_dist, use_container_width=True)
                     
                 with col_hist2:
-                    # 3. Grafik: Aşı Durumu Pasta Grafiği
                     st.subheader("🛡️ Vakaların Aşılanma Durumu")
                     if 'Aşı Durumu' in df_cases.columns:
-                        # Yazım farklılıklarını temizle (örn: AŞISIZ ile Aşısız)
                         df_cases['Aşı_Temiz'] = df_cases['Aşı Durumu'].astype(str).str.strip().str.upper()
-                        # Azınlık grupları "Diğer" altına toplayalım ki grafik şık dursun
                         vax_counts = df_cases['Aşı_Temiz'].value_counts()
                         vax_data = vax_counts.reset_index()
                         vax_data.columns = ['Aşı Durumu', 'Vaka Sayısı']
@@ -148,8 +182,6 @@ if file_cases and file_pop and file_vax:
                         fig_vax = px.pie(vax_data.head(5), names='Aşı Durumu', values='Vaka Sayısı', hole=0.4, 
                                          color_discrete_sequence=px.colors.qualitative.Pastel)
                         st.plotly_chart(fig_vax, use_container_width=True)
-                    else:
-                        st.warning("Aşı Durumu sütunu bulunamadı.")
 
         except Exception as e:
             st.error(f"Veri işlenirken bir hata oluştu. Hata Kodu: {e}")
