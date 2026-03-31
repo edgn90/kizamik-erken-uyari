@@ -3,13 +3,14 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
+import re
 from datetime import datetime
 
 # Sayfa Ayarları
-st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🧬 Kızamık YZ Sürveyans Radarı (V6.1: Akıllı Eşleşme)")
-st.markdown("Mekansal Analiz (3KM), Üstel Zaman Zayıflatması ve **Kusursuz Veri Eşleştirme** yeteneklerine sahip tam teşekküllü model.")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V6.2: Kusursuz Eşleşme)")
+st.markdown("Mekansal Analiz (3KM), Üstel Zaman Zayıflatması ve **Regex (Sayısal Kimlik) Eşleştirme** motoru.")
 
 # --- 1. YÜKLEME MODÜLÜ (SIDEBAR) ---
 st.sidebar.header("📂 Veri Yükleme Paneli")
@@ -32,36 +33,43 @@ def haversine_vectorized(lat1, lon1, lat2_array, lon2_array):
     c = 2 * np.arcsin(np.sqrt(a))
     return R * c
 
-# İsim Temizleme Motoru (Farklı dosyalardaki kurum isimlerini kilitler)
-def isim_temizle(isim):
-    if pd.isna(isim):
-        return ""
-    isim = str(isim).upper()
-    silinecekler = ['İSTANBUL', 'ISTANBUL', 'AİLE HEKİMLİĞİ BİRİMİ', 'AILE HEKIMLIGI BIRIMI', 
-                    'AİLE SAĞLIĞI MERKEZİ', 'AILE SAGLIGI MERKEZI', 'AHB', 'ASM', 'NOLU', 'NO LU']
-    for kelime in silinecekler:
-        isim = isim.replace(kelime, '')
-    return " ".join(isim.split()) # Fazla boşlukları temizle
+# REGEX MOTORU: Sadece Rakamı Çeker (Örn: "Adalar 1 Nolu" -> "1")
+def extract_ahb_no(text):
+    nums = re.findall(r'\d+', str(text))
+    # Sıfırla başlayanları (01, 02) eşitlemek için int() yapıp tekrar stringe çeviriyoruz
+    return str(int(nums[0])) if nums else "0" 
 
+# ANA RİSK HESAPLAMA MOTORU
 def calculate_risk_scores(recent_cases, df_pop, df_vax, df_geo, target_date):
-    # Veri Hazırlığı ve Akıllı Eşleştirme (Merge)
     df_pop['Target_Pop'] = pd.to_numeric(df_pop['Bebek Sayısı'], errors='coerce').fillna(0) + pd.to_numeric(df_pop['Çocuk Sayısı'], errors='coerce').fillna(0)
     df_vax['Toplam Aşılama Hızı'] = pd.to_numeric(df_vax['Toplam Aşılama Hızı'], errors='coerce')
     
-    # 3 Dosyadaki isimleri de saflaştırıyoruz
-    df_pop['Kurum_Temiz'] = df_pop['Kurum Adı'].apply(isim_temizle)
-    df_vax['Kurum_Temiz'] = df_vax['Kurum Adı'].apply(isim_temizle)
+    # Adım 1: Nüfus ve Aşıyı Birleştir (Eski başarılı yöntem)
+    df_pop['Kurum_Match'] = df_pop['Kurum Adı'].astype(str).str.strip().str.upper()
+    df_vax['Kurum_Match'] = df_vax['Kurum Adı'].astype(str).str.strip().str.upper()
+    df_merged = pd.merge(df_pop[['Kurum_Match', 'İlçe', 'Kurum Adı', 'Target_Pop']], 
+                         df_vax[['Kurum_Match', 'Toplam Aşılama Hızı']], 
+                         on='Kurum_Match', how='inner')
     
-    # Koordinat dosyasında 'Birim Adı' veya 'Kurum Adı' olabilir, güvenli alım yapalım
+    # Adım 2: Koordinat (Geo) Dosyasını Regex (İlçe + AHB No) ile Birleştir
+    df_merged['İlçe_Temiz'] = df_merged['İlçe'].astype(str).str.strip().str.upper()
+    df_merged['AHB_No'] = df_merged['Kurum Adı'].apply(extract_ahb_no)
+    
     col_name = 'Birim Adı' if 'Birim Adı' in df_geo.columns else 'Kurum Adı'
-    df_geo['Kurum_Temiz'] = df_geo[col_name].apply(isim_temizle)
+    df_geo['İlçe_Temiz'] = df_geo['İlçe'].astype(str).str.strip().str.upper() if 'İlçe' in df_geo.columns else "BİLİNMİYOR"
+    df_geo['AHB_No'] = df_geo[col_name].apply(extract_ahb_no)
     
-    df_merged = pd.merge(df_pop[['Kurum_Temiz', 'İlçe', 'Kurum Adı', 'Target_Pop']], df_vax[['Kurum_Temiz', 'Toplam Aşılama Hızı']], on='Kurum_Temiz', how='inner')
-    df_merged = pd.merge(df_merged, df_geo[['Kurum_Temiz', 'Lat', 'Lon']], on='Kurum_Temiz', how='left')
+    # Mükerrerleri at ve sağlam koordinatları al
+    df_geo_unique = df_geo.dropna(subset=['Lat', 'Lon']).drop_duplicates(subset=['İlçe_Temiz', 'AHB_No'])
     
-    df_merged['Unvax_Rate'] = 100 - df_merged['Toplam Aşılama Hızı']
-    df_merged['Korunmasız_Cocuk'] = (df_merged['Target_Pop'] * df_merged['Unvax_Rate'] / 100).fillna(0).astype(int)
-    df_clean = df_merged[(df_merged['İlçe'].notna()) & (df_merged['İlçe'] != 'TUM') & (df_merged['İlçe'] != 'NAN')].copy()
+    # Kusursuz Kilit (Merge)
+    df_clean = pd.merge(df_merged, df_geo_unique[['İlçe_Temiz', 'AHB_No', 'Lat', 'Lon']], on=['İlçe_Temiz', 'AHB_No'], how='left')
+    
+    # Temizlik
+    df_clean = df_clean[(df_clean['İlçe'].notna()) & (df_clean['İlçe'] != 'TUM') & (df_clean['İlçe'] != 'NAN')].copy()
+    
+    df_clean['Unvax_Rate'] = 100 - df_clean['Toplam Aşılama Hızı']
+    df_clean['Korunmasız_Cocuk'] = (df_clean['Target_Pop'] * df_clean['Unvax_Rate'] / 100).fillna(0).astype(int)
 
     # Zaman Zayıflatması (Time Decay)
     recent_cases['Gun_Farki'] = (target_date - recent_cases['Tarih']).dt.days
@@ -80,7 +88,7 @@ def calculate_risk_scores(recent_cases, df_pop, df_vax, df_geo, target_date):
 
     df_clean['Cember_Vaka_Yuk'] = df_clean.apply(calculate_3km_weighted, axis=1).round(1)
 
-    # Skorlama
+    # Skorlama Motoru
     max_vuln = df_clean['Korunmasız_Cocuk'].max()
     max_cases = df_clean['Cember_Vaka_Yuk'].max()
     df_clean['Vuln_Score'] = df_clean['Korunmasız_Cocuk'] / max_vuln if max_vuln > 0 else 0
@@ -99,9 +107,8 @@ def calculate_risk_scores(recent_cases, df_pop, df_vax, df_geo, target_date):
 
 # --- ANA İŞLEYİŞ ---
 if file_cases and file_pop and file_vax and file_geo:
-    with st.spinner('Yapay Zeka Modülleri Yükleniyor ve İsimler Eşleştiriliyor...'):
+    with st.spinner('Yapay Zeka Modülleri Yükleniyor ve Regex Motoru Çalıştırılıyor...'):
         try:
-            # Verileri Oku
             df_cases = pd.read_csv(file_cases) if file_cases.name.endswith('.csv') else pd.read_excel(file_cases)
             df_pop = pd.read_csv(file_pop) if file_pop.name.endswith('.csv') else pd.read_excel(file_pop)
             df_vax = pd.read_csv(file_vax) if file_vax.name.endswith('.csv') else pd.read_excel(file_vax)
@@ -124,22 +131,20 @@ if file_cases and file_pop and file_vax and file_geo:
                 
                 target_str = f"{aylar[(latest_date + pd.DateOffset(months=1)).month]} {(latest_date + pd.DateOffset(months=1)).year}"
                 
-                st.info(f"🎯 **Canlı Radar:** Son 6 ayın ivmesiyle **{target_str}** ayı hedefleri belirlendi.")
+                st.info(f"🎯 **Canlı Radar:** Regex eşleşmesi ile **{target_str}** ayı hedefleri belirlendi.")
                 
-                # Tablo
                 def highlight_risk(val):
                     color = '#ff4b4b' if val > 80 else '#ffa500' if val > 60 else ''
                     return f'background-color: {color}'
-                st.dataframe(df_final[['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']].head(30).style.applymap(highlight_risk, subset=['Risk_Skoru']).format({"Toplam Aşılama Hızı": "{:.1f}", "Risk_Skoru": "{:.1f}"}), use_container_width=True)
+                st.dataframe(df_final[['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']].head(30).style.applymap(highlight_risk, subset=['Risk_Skoru']).format({"Aşı Hızı (%)": "{:.1f}", "Risk_Skoru": "{:.1f}"}), use_container_width=True)
 
-                # Harita
                 st.markdown("---")
                 st.subheader("🗺️ Taktik Sürveyans Haritası")
+                
                 fig_map = go.Figure()
                 recent_cases_geo = recent_cases.dropna(subset=['Lat', 'Lon'])
                 
                 if not recent_cases_geo.empty:
-                    # Time Decay Ağırlığını hesapla
                     recent_cases_geo['Gun_Farki'] = (latest_date - recent_cases_geo['Tarih']).dt.days
                     recent_cases_geo['Gun_Farki'] = recent_cases_geo['Gun_Farki'].apply(lambda x: 0 if x < 0 else x)
                     recent_cases_geo['Vaka_Agirligi'] = 0.5 ** (recent_cases_geo['Gun_Farki'] / 30.0)
@@ -153,6 +158,8 @@ if file_cases and file_pop and file_vax and file_geo:
                     fig_map.add_trace(go.Scattermapbox(lat=top_ahb['Lat'], lon=top_ahb['Lon'], mode='markers', 
                                                        marker=dict(size=14, color='cyan', opacity=0.9, symbol='circle'), 
                                                        text=hover_texts, name='Kritik ASM Merkezleri', hoverinfo='text'))
+                else:
+                    st.error("🚨 HATA: Mavi iğneler yine oluşmadı. Nüfus verisinde AHB Numarası (Sayı) bulanamıyor olabilir.")
                 
                 fig_map.update_layout(mapbox_style="carto-darkmatter", mapbox_center_lon=28.97, mapbox_center_lat=41.05, 
                                       mapbox_zoom=9.5, margin={"r":0,"t":0,"l":0,"b":0})
@@ -194,7 +201,7 @@ if file_cases and file_pop and file_vax and file_geo:
                             top_30_predicted = predicted_df.head(30).dropna(subset=['Lat', 'Lon'])
                             
                             if top_30_predicted.empty:
-                                st.error("Eşleştirme başarısız! Mavi iğneler bulunamadı. Lütfen koordinat dosyasındaki isimleri kontrol edin.")
+                                st.error("Mavi İğneler haritaya yerleşemedi. Eşleşme hatası.")
                             else:
                                 top_lats = top_30_predicted['Lat'].values
                                 top_lons = top_30_predicted['Lon'].values
@@ -237,12 +244,12 @@ if file_cases and file_pop and file_vax and file_geo:
                                 if hits > 0:
                                     fig_test.add_trace(go.Scattermapbox(lat=hit_cases_lat, lon=hit_cases_lon, mode='markers', 
                                                                        marker=dict(size=8, color='#00ff00'), 
-                                                                       name='Yakalanan Vakalar'))
+                                                                       name='Yakalanan Vakalar (Başarı)'))
                                 
                                 if len(miss_cases_lat) > 0:
                                     fig_test.add_trace(go.Scattermapbox(lat=miss_cases_lat, lon=miss_cases_lon, mode='markers', 
                                                                        marker=dict(size=8, color='#ff0000'), 
-                                                                       name='Kaçan Vakalar'))
+                                                                       name='Kaçan Vakalar (Hata)'))
                                                                        
                                 fig_test.update_layout(mapbox_style="carto-darkmatter", mapbox_center_lon=28.97, mapbox_center_lat=41.05, 
                                                       mapbox_zoom=9.5, margin={"r":0,"t":0,"l":0,"b":0},
