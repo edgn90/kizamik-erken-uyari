@@ -10,7 +10,7 @@ from datetime import datetime
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V8.1: Otonom Altyapı)")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V8.3: Otonom Altyapı + Kusursuz Eşleşme)")
 st.markdown("Nüfus ve Koordinat altyapıları sisteme gömülmüştür. Sadece dinamik değişen **Vaka** ve **Aşı** verilerini yükleyiniz.")
 
 # --- 1. YÜKLEME MODÜLÜ (SIDEBAR) ---
@@ -22,6 +22,12 @@ aylar = {1: 'Ocak', 2: 'Şubat', 3: 'Mart', 4: 'Nisan', 5: 'Mayıs', 6: 'Haziran
          7: 'Temmuz', 8: 'Ağustos', 9: 'Eylül', 10: 'Ekim', 11: 'Kasım', 12: 'Aralık'}
 
 # --- YARDIMCI FONKSİYONLAR ---
+def tr_upper(text):
+    """Türkçe karakterlere duyarlı büyük harf dönüştürücü."""
+    if pd.isna(text): return ""
+    text = str(text).replace('i', 'İ').replace('ı', 'I').replace('i̇', 'İ')
+    return text.upper().strip()
+
 def haversine_vectorized(lat1, lon1, lat2_array, lon2_array):
     R = 6371.0
     lat1, lon1 = np.radians(lat1), np.radians(lon1)
@@ -40,22 +46,24 @@ def calculate_risk_scores(recent_cases, df_pop, df_vax, df_geo, target_date):
     df_pop['Target_Pop'] = pd.to_numeric(df_pop['Bebek Sayısı'], errors='coerce').fillna(0) + pd.to_numeric(df_pop['Çocuk Sayısı'], errors='coerce').fillna(0)
     df_vax['Toplam Aşılama Hızı'] = pd.to_numeric(df_vax['Toplam Aşılama Hızı'], errors='coerce')
     
-    df_pop['Kurum_Match'] = df_pop['Kurum Adı'].astype(str).str.strip().str.upper()
-    df_vax['Kurum_Match'] = df_vax['Kurum Adı'].astype(str).str.strip().str.upper()
-    df_merged = pd.merge(df_pop[['Kurum_Match', 'İlçe', 'Kurum Adı', 'Target_Pop']], 
-                         df_vax[['Kurum_Match', 'Toplam Aşılama Hızı']], 
-                         on='Kurum_Match', how='inner')
+    # Akıllı Eşleşme (İlçe + AHB No)
+    df_pop['İlçe_Eslenik'] = df_pop['İlçe'].apply(tr_upper)
+    df_pop['AHB_No'] = df_pop['Kurum Adı'].apply(extract_ahb_no)
     
-    df_merged['İlçe_Temiz'] = df_merged['İlçe'].astype(str).str.strip().str.upper()
-    df_merged['AHB_No'] = df_merged['Kurum Adı'].apply(extract_ahb_no)
+    df_vax['İlçe_Eslenik'] = df_vax['İlçe'].apply(tr_upper)
+    df_vax['AHB_No'] = df_vax['Kurum Adı'].apply(extract_ahb_no)
+    
+    df_merged = pd.merge(df_pop[['İlçe_Eslenik', 'AHB_No', 'İlçe', 'Kurum Adı', 'Target_Pop']], 
+                         df_vax[['İlçe_Eslenik', 'AHB_No', 'Toplam Aşılama Hızı']], 
+                         on=['İlçe_Eslenik', 'AHB_No'], how='inner')
     
     col_name = 'Birim Adı' if 'Birim Adı' in df_geo.columns else 'Kurum Adı'
-    df_geo['İlçe_Temiz'] = df_geo['İlçe'].astype(str).str.strip().str.upper() if 'İlçe' in df_geo.columns else "BİLİNMİYOR"
+    df_geo['İlçe_Eslenik'] = df_geo['İlçe'].apply(tr_upper) if 'İlçe' in df_geo.columns else "BİLİNMİYOR"
     df_geo['AHB_No'] = df_geo[col_name].apply(extract_ahb_no)
     
-    df_geo_unique = df_geo.dropna(subset=['Lat', 'Lon']).drop_duplicates(subset=['İlçe_Temiz', 'AHB_No'])
+    df_geo_unique = df_geo.dropna(subset=['Lat', 'Lon']).drop_duplicates(subset=['İlçe_Eslenik', 'AHB_No'])
     
-    df_clean = pd.merge(df_merged, df_geo_unique[['İlçe_Temiz', 'AHB_No', 'Lat', 'Lon']], on=['İlçe_Temiz', 'AHB_No'], how='left')
+    df_clean = pd.merge(df_merged, df_geo_unique[['İlçe_Eslenik', 'AHB_No', 'Lat', 'Lon']], on=['İlçe_Eslenik', 'AHB_No'], how='left')
     df_clean = df_clean[(df_clean['İlçe'].notna()) & (df_clean['İlçe'] != 'TUM') & (df_clean['İlçe'] != 'NAN')].copy()
     
     df_clean['Unvax_Rate'] = 100 - df_clean['Toplam Aşılama Hızı']
@@ -101,20 +109,15 @@ if file_cases and file_vax:
             df_cases = pd.read_csv(file_cases) if file_cases.name.endswith('.csv') else pd.read_excel(file_cases)
             df_vax = pd.read_csv(file_vax) if file_vax.name.endswith('.csv') else pd.read_excel(file_vax)
 
-            # 2. SİSTEME GÖMÜLÜ SABİT DOSYALARI (KOORDİNAT VE NÜFUS) OTOMATİK OKUMA
-            geo_file_csv = 'ahb_geocoded.csv'
-            geo_file_xlsx = 'ahb_geocoded.xlsx'
-            pop_file_csv = 'nufus_verisi.csv'
-            pop_file_xlsx = 'nufus_verisi.xlsx'
-            
-            if os.path.exists(geo_file_csv): df_geo = pd.read_csv(geo_file_csv)
-            elif os.path.exists(geo_file_xlsx): df_geo = pd.read_excel(geo_file_xlsx)
+            # 2. SİSTEME GÖMÜLÜ SABİT DOSYALARI OTOMATİK OKUMA
+            if os.path.exists('ahb_geocoded.csv'): df_geo = pd.read_csv('ahb_geocoded.csv')
+            elif os.path.exists('ahb_geocoded.xlsx'): df_geo = pd.read_excel('ahb_geocoded.xlsx')
             else:
                 st.error("🚨 KRİTİK HATA: 'ahb_geocoded' (Koordinat) dosyası sistemde bulunamadı!")
                 st.stop()
 
-            if os.path.exists(pop_file_csv): df_pop = pd.read_csv(pop_file_csv)
-            elif os.path.exists(pop_file_xlsx): df_pop = pd.read_excel(pop_file_xlsx)
+            if os.path.exists('nufus_verisi.csv'): df_pop = pd.read_csv('nufus_verisi.csv')
+            elif os.path.exists('nufus_verisi.xlsx'): df_pop = pd.read_excel('nufus_verisi.xlsx')
             else:
                 st.error("🚨 KRİTİK HATA: 'nufus_verisi' (Nüfus) dosyası sistemde bulunamadı!")
                 st.stop()
@@ -138,7 +141,7 @@ if file_cases and file_vax:
                 def highlight_risk(val):
                     color = '#ff4b4b' if val > 80 else '#ffa500' if val > 60 else ''
                     return f'background-color: {color}'
-                st.dataframe(df_final[['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']].head(30).style.applymap(highlight_risk, subset=['Risk_Skoru']).format({"Aşı Hızı (%)": "{:.1f}", "Risk_Skoru": "{:.1f}"}), use_container_width=True)
+                st.dataframe(df_final[['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']].head(30).style.applymap(highlight_risk, subset=['Risk_Skoru']).format({"Toplam Aşılama Hızı": "{:.1f}", "Risk_Skoru": "{:.1f}"}), use_container_width=True)
 
                 st.markdown("---")
                 st.subheader("🗺️ Taktik Sürveyans Haritası")
@@ -158,6 +161,8 @@ if file_cases and file_vax:
                     fig_map.add_trace(go.Scattermapbox(lat=top_ahb['Lat'], lon=top_ahb['Lon'], mode='markers', 
                                                        marker=dict(size=14, color='cyan', opacity=0.9, symbol='circle'), 
                                                        text=hover_texts, name='Kritik ASM Merkezleri', hoverinfo='text'))
+                else:
+                    st.warning("⚠️ Mavi iğneler çizilemedi. Nüfus ve Koordinat eşleşmesi başarısız.")
                 
                 fig_map.update_layout(mapbox_style="carto-darkmatter", mapbox_center_lon=28.97, mapbox_center_lat=41.05, 
                                       mapbox_zoom=9.5, margin={"r":0,"t":0,"l":0,"b":0})
@@ -169,7 +174,7 @@ if file_cases and file_vax:
                 epi_data = df_cases.groupby('Yıl_Ay').size().reset_index(name='Vaka Sayısı')
                 st.plotly_chart(px.line(epi_data[epi_data['Yıl_Ay'] != 'NaT'], x='Yıl_Ay', y='Vaka Sayısı', markers=True, title="Salgın Eğrisi"), use_container_width=True)
 
-            # --- TAB 3: BACKTESTING (HARİTA EKLENDİ) ---
+            # --- TAB 3: BACKTESTING (HARİTA VE DETAYLAR GERİ GELDİ) ---
             with tab3:
                 st.markdown("### 🧪 Model Doğrulama ve Kör Test (Backtesting)")
                 min_date = df_cases['Tarih'].min() + pd.DateOffset(months=6)
@@ -193,7 +198,7 @@ if file_cases and file_vax:
                             top_30_predicted = predicted_df.head(30).dropna(subset=['Lat', 'Lon'])
                             
                             if top_30_predicted.empty:
-                                st.error("Eşleşme hatası.")
+                                st.error("Eşleşme hatası! Mavi merkezler bulunamıyor.")
                             else:
                                 top_lats = top_30_predicted['Lat'].values
                                 top_lons = top_30_predicted['Lon'].values
@@ -202,7 +207,7 @@ if file_cases and file_vax:
                                 hit_cases_lat, hit_cases_lon = [], []
                                 miss_cases_lat, miss_cases_lon = [], []
                                 
-                                # Gerçekleşen her bir vakanın radara yakalanıp yakalanmadığını bul
+                                # Gerçekleşen her bir vakanın radara yakalanıp yakalanmadığını haritalandırma için listelere ayır
                                 for _, row in target_cases.iterrows():
                                     dists = haversine_vectorized(row['Lat'], row['Lon'], top_lats, top_lons)
                                     if np.any(dists <= 3.0): 
@@ -217,33 +222,33 @@ if file_cases and file_vax:
                                 
                                 st.success(f"✅ Test Tamamlandı! Dönem: {test_month_str}")
                                 col_a, col_b, col_c = st.columns(3)
-                                col_a.metric("Gerçekleşen Vaka", len(target_cases))
-                                col_b.metric("Yakalanan Vaka", hits)
-                                col_c.metric("İsabet Oranı", f"%{accuracy:.1f}")
+                                col_a.metric("Gerçekleşen Toplam Vaka", len(target_cases))
+                                col_b.metric("Radarımızın Yakaladığı Vaka", hits)
+                                col_c.metric("Modelin İsabet Oranı", f"%{accuracy:.1f}")
                                 
-                                # --- GERİ EKLENEN HARİTA BÖLÜMÜ ---
+                                # --- GERİ EKLENEN ÇARPIŞMA HARİTASI ---
                                 st.markdown("#### 🗺️ Çarpışma Haritası (Tahminler vs Gerçekleşenler)")
                                 st.markdown("Açık Mavi: Modelin 1 ay önce çizdiği 3KM radar çemberleri. Yeşil Noktalar: Radarın yakaladığı vakalar. Kırmızı Noktalar: Radarın dışına düşen vakalar.")
                                 fig_test = go.Figure()
                                 
                                 hover_pred = top_30_predicted['Kurum Adı'] + "<br>Model Skoru: " + top_30_predicted['Risk_Skoru'].astype(str)
                                 
-                                # Radar Alanları (Şeffaf daireler)
+                                # Radar Alanları (Şeffaf Açık Mavi Daireler)
                                 fig_test.add_trace(go.Scattermapbox(lat=top_lats, lon=top_lons, mode='markers', 
                                                                    marker=dict(size=25, color='rgba(0, 255, 255, 0.3)'), 
                                                                    name='Tahmin Edilen 3KM Radar Alanları', hoverinfo='none'))
-                                # Radar Merkezleri (Parlak mavi)
+                                # Radar Merkezleri (Parlak Mavi İğneler)
                                 fig_test.add_trace(go.Scattermapbox(lat=top_lats, lon=top_lons, mode='markers', 
                                                                    marker=dict(size=8, color='cyan'), 
                                                                    text=hover_pred, name='Tahmin Merkezleri', hoverinfo='text'))
                                 
-                                # Başarılı Yakalananlar (Yeşil)
+                                # Başarılı Yakalananlar (Yeşil Noktalar)
                                 if hits > 0:
                                     fig_test.add_trace(go.Scattermapbox(lat=hit_cases_lat, lon=hit_cases_lon, mode='markers', 
                                                                        marker=dict(size=8, color='#00ff00'), 
                                                                        name='Yakalanan Vakalar (Başarı)'))
                                 
-                                # Kaçanlar (Kırmızı)
+                                # Kaçanlar (Kırmızı Noktalar)
                                 if len(miss_cases_lat) > 0:
                                     fig_test.add_trace(go.Scattermapbox(lat=miss_cases_lat, lon=miss_cases_lon, mode='markers', 
                                                                        marker=dict(size=8, color='#ff0000'), 
