@@ -10,7 +10,7 @@ from datetime import datetime
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V8.3: Otonom Altyapı + Kusursuz Eşleşme)")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V8.4: Güncel Sistem Uyumluluğu)")
 st.markdown("Nüfus ve Koordinat altyapıları sisteme gömülmüştür. Sadece dinamik değişen **Vaka** ve **Aşı** verilerini yükleyiniz.")
 
 # --- 1. YÜKLEME MODÜLÜ (SIDEBAR) ---
@@ -141,7 +141,9 @@ if file_cases and file_vax:
                 def highlight_risk(val):
                     color = '#ff4b4b' if val > 80 else '#ffa500' if val > 60 else ''
                     return f'background-color: {color}'
-                st.dataframe(df_final[['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']].head(30).style.applymap(highlight_risk, subset=['Risk_Skoru']).format({"Toplam Aşılama Hızı": "{:.1f}", "Risk_Skoru": "{:.1f}"}), use_container_width=True)
+                
+                # UYARI ÇÖZÜMÜ: applymap yerine map kullanıldı. (Pandas >= 2.1.0 uyumluluğu)
+                st.dataframe(df_final[['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']].head(30).style.map(highlight_risk, subset=['Risk_Skoru']).format({"Toplam Aşılama Hızı": "{:.1f}", "Risk_Skoru": "{:.1f}"}), use_container_width=True)
 
                 st.markdown("---")
                 st.subheader("🗺️ Taktik Sürveyans Haritası")
@@ -174,7 +176,7 @@ if file_cases and file_vax:
                 epi_data = df_cases.groupby('Yıl_Ay').size().reset_index(name='Vaka Sayısı')
                 st.plotly_chart(px.line(epi_data[epi_data['Yıl_Ay'] != 'NaT'], x='Yıl_Ay', y='Vaka Sayısı', markers=True, title="Salgın Eğrisi"), use_container_width=True)
 
-            # --- TAB 3: BACKTESTING (HARİTA VE DETAYLAR GERİ GELDİ) ---
+            # --- TAB 3: BACKTESTING ---
             with tab3:
                 st.markdown("### 🧪 Model Doğrulama ve Kör Test (Backtesting)")
                 min_date = df_cases['Tarih'].min() + pd.DateOffset(months=6)
@@ -207,7 +209,6 @@ if file_cases and file_vax:
                                 hit_cases_lat, hit_cases_lon = [], []
                                 miss_cases_lat, miss_cases_lon = [], []
                                 
-                                # Gerçekleşen her bir vakanın radara yakalanıp yakalanmadığını haritalandırma için listelere ayır
                                 for _, row in target_cases.iterrows():
                                     dists = haversine_vectorized(row['Lat'], row['Lon'], top_lats, top_lons)
                                     if np.any(dists <= 3.0): 
@@ -226,29 +227,24 @@ if file_cases and file_vax:
                                 col_b.metric("Radarımızın Yakaladığı Vaka", hits)
                                 col_c.metric("Modelin İsabet Oranı", f"%{accuracy:.1f}")
                                 
-                                # --- GERİ EKLENEN ÇARPIŞMA HARİTASI ---
                                 st.markdown("#### 🗺️ Çarpışma Haritası (Tahminler vs Gerçekleşenler)")
                                 st.markdown("Açık Mavi: Modelin 1 ay önce çizdiği 3KM radar çemberleri. Yeşil Noktalar: Radarın yakaladığı vakalar. Kırmızı Noktalar: Radarın dışına düşen vakalar.")
                                 fig_test = go.Figure()
                                 
                                 hover_pred = top_30_predicted['Kurum Adı'] + "<br>Model Skoru: " + top_30_predicted['Risk_Skoru'].astype(str)
                                 
-                                # Radar Alanları (Şeffaf Açık Mavi Daireler)
                                 fig_test.add_trace(go.Scattermapbox(lat=top_lats, lon=top_lons, mode='markers', 
                                                                    marker=dict(size=25, color='rgba(0, 255, 255, 0.3)'), 
                                                                    name='Tahmin Edilen 3KM Radar Alanları', hoverinfo='none'))
-                                # Radar Merkezleri (Parlak Mavi İğneler)
                                 fig_test.add_trace(go.Scattermapbox(lat=top_lats, lon=top_lons, mode='markers', 
                                                                    marker=dict(size=8, color='cyan'), 
                                                                    text=hover_pred, name='Tahmin Merkezleri', hoverinfo='text'))
                                 
-                                # Başarılı Yakalananlar (Yeşil Noktalar)
                                 if hits > 0:
                                     fig_test.add_trace(go.Scattermapbox(lat=hit_cases_lat, lon=hit_cases_lon, mode='markers', 
                                                                        marker=dict(size=8, color='#00ff00'), 
                                                                        name='Yakalanan Vakalar (Başarı)'))
                                 
-                                # Kaçanlar (Kırmızı Noktalar)
                                 if len(miss_cases_lat) > 0:
                                     fig_test.add_trace(go.Scattermapbox(lat=miss_cases_lat, lon=miss_cases_lon, mode='markers', 
                                                                        marker=dict(size=8, color='#ff0000'), 
