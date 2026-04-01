@@ -16,7 +16,7 @@ except ImportError:
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V9.2: 4 Modüllü Entegre Sistem)")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V9.3: 4 Modüllü Entegre Sistem)")
 st.markdown("Nüfus ve Koordinat altyapıları sisteme gömülmüştür. Sadece dinamik değişen **Vaka** ve **Aşı** verilerini yükleyiniz.")
 
 # --- 1. YÜKLEME MODÜLÜ (SIDEBAR) ---
@@ -184,7 +184,7 @@ if file_cases and file_vax:
                 st.plotly_chart(fig_map, use_container_width=True)
 
             # ==========================================
-            # TAB 2: TARİHSEL ANALİZ (Eski Haliyle Korundu)
+            # TAB 2: TARİHSEL ANALİZ
             # ==========================================
             with tab2:
                 st.markdown("### 📊 Tarihsel Salgın Eğrisi")
@@ -196,7 +196,7 @@ if file_cases and file_vax:
                 st.plotly_chart(px.line(epi_data, x='Yıl_Ay', y='Vaka Sayısı', markers=True, title="Tarihsel Vaka Gelişimi"), use_container_width=True)
 
             # ==========================================
-            # TAB 3: HOLT-WINTERS GELECEK TAHMİNİ (YENİ EKLENDİ)
+            # TAB 3: HOLT-WINTERS GELECEK TAHMİNİ
             # ==========================================
             with tab3:
                 st.markdown("### 📈 Holt-Winters ile Mevsimsel Gelecek Projeksiyonu")
@@ -240,14 +240,16 @@ if file_cases and file_vax:
                             st.error(f"🚨 **ALGORİTMA ÖNGÖRÜSÜ:** Tarihsel trendler ve mevsimsel döngülere bakılırsa, önümüzdeki 6 ay içindeki en büyük risk **{ay_adi} {yil}** döneminde beklenmektedir. Bu ayda il genelinde tahmini vaka sayısının **{peak_value}** seviyelerine ulaşma potansiyeli vardır.")
                             
                             fig_hw = go.Figure()
-                            fig_hw.add_trace(go.Scatter(x=ts_df.index, y=ts_df.values, mode='lines+markers', name='Gerçekleşen Vakalar', line=dict(color='white', width=2)))
+                            
+                            # GÖRSEL HATA BURADA ÇÖZÜLDÜ: Renk 'white' yerine '#1f77b4' (Mavi) yapıldı.
+                            fig_hw.add_trace(go.Scatter(x=ts_df.index, y=ts_df.values, mode='lines+markers', name='Gerçekleşen Vakalar', line=dict(color='#1f77b4', width=2)))
+                            
                             fig_hw.add_trace(go.Scatter(x=forecast.index, y=forecast.values, mode='lines+markers', name='Holt-Winters YZ Tahmini', line=dict(color='#00ff00', width=3, dash='dot')))
                             
                             fig_hw.update_layout(
                                 title='Holt-Winters Algoritması ile 6 Aylık Epidemiyolojik Projeksiyon', 
                                 xaxis_title='Zaman (Aylık)', 
                                 yaxis_title='Vaka Sayısı', 
-                                template="plotly_dark", 
                                 hovermode="x unified"
                             )
                             st.plotly_chart(fig_hw, use_container_width=True)
@@ -256,7 +258,7 @@ if file_cases and file_vax:
                         st.error(f"Tahmin motorunda hata oluştu (Veriniz çok kısa veya düzensiz olabilir): {e}")
 
             # ==========================================
-            # TAB 4: BACKTESTING (Eskiden Tab 3 idi, aynen korundu)
+            # TAB 4: BACKTESTING
             # ==========================================
             with tab4:
                 st.markdown("### 🧪 Model Doğrulama ve Kör Test (Backtesting)")
