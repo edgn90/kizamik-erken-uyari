@@ -10,7 +10,7 @@ from datetime import datetime
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V8.4: Güncel Sistem Uyumluluğu)")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V8.5: Tam Uyumluluk)")
 st.markdown("Nüfus ve Koordinat altyapıları sisteme gömülmüştür. Sadece dinamik değişen **Vaka** ve **Aşı** verilerini yükleyiniz.")
 
 # --- 1. YÜKLEME MODÜLÜ (SIDEBAR) ---
@@ -142,7 +142,7 @@ if file_cases and file_vax:
                     color = '#ff4b4b' if val > 80 else '#ffa500' if val > 60 else ''
                     return f'background-color: {color}'
                 
-                # UYARI ÇÖZÜMÜ: applymap yerine map kullanıldı. (Pandas >= 2.1.0 uyumluluğu)
+                # Pandas 2.1.0+ Uyumluluğu (applymap yerine map)
                 st.dataframe(df_final[['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']].head(30).style.map(highlight_risk, subset=['Risk_Skoru']).format({"Toplam Aşılama Hızı": "{:.1f}", "Risk_Skoru": "{:.1f}"}), use_container_width=True)
 
                 st.markdown("---")
@@ -172,15 +172,23 @@ if file_cases and file_vax:
 
             # --- TAB 2: TARİHSEL ANALİZ ---
             with tab2:
-                df_cases['Yıl_Ay'] = df_cases['Tarih'].dt.to_period('M').astype(str)
-                epi_data = df_cases.groupby('Yıl_Ay').size().reset_index(name='Vaka Sayısı')
-                st.plotly_chart(px.line(epi_data[epi_data['Yıl_Ay'] != 'NaT'], x='Yıl_Ay', y='Vaka Sayısı', markers=True, title="Salgın Eğrisi"), use_container_width=True)
+                # PANDAS 'M'/'ME' UYUM HATASI GİDERİLDİ
+                df_cases_valid = df_cases.dropna(subset=['Tarih']).copy()
+                df_cases_valid['Yıl_Ay'] = df_cases_valid['Tarih'].dt.strftime('%Y-%m') # Versiyondan bağımsız
+                epi_data = df_cases_valid.groupby('Yıl_Ay').size().reset_index(name='Vaka Sayısı')
+                st.plotly_chart(px.line(epi_data, x='Yıl_Ay', y='Vaka Sayısı', markers=True, title="Salgın Eğrisi"), use_container_width=True)
 
             # --- TAB 3: BACKTESTING ---
             with tab3:
                 st.markdown("### 🧪 Model Doğrulama ve Kör Test (Backtesting)")
                 min_date = df_cases['Tarih'].min() + pd.DateOffset(months=6)
-                valid_months = pd.date_range(start=min_date, end=latest_date, freq='M').strftime('%Y-%m').tolist()
+                
+                # PANDAS VERSİYON ÇARPIŞMASI ÇÖZÜLDÜ (Yeni Pandas 'ME', Eski Pandas 'M' kullanır)
+                try:
+                    valid_months = pd.date_range(start=min_date, end=latest_date, freq='ME').strftime('%Y-%m').tolist()
+                except ValueError:
+                    valid_months = pd.date_range(start=min_date, end=latest_date, freq='M').strftime('%Y-%m').tolist()
+
                 test_month_str = st.selectbox("Sınamak İstediğiniz Gelecek Ayı Seçin:", valid_months[::-1])
                 
                 if st.button("🚀 Kör Testi Başlat (Backtest)", type="primary"):
