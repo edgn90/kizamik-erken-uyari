@@ -20,11 +20,18 @@ try:
 except ImportError:
     FPDF = None
 
+# --- PANDAS VERSİYON DEDEKTÖRÜ (M vs ME Hatası Kesin Çözümü) ---
+try:
+    pd.date_range('2020-01-01', periods=1, freq='ME')
+    FREQ_M = 'ME'
+except ValueError:
+    FREQ_M = 'M'
+
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V9.5: İleri Düzey Raporlama)")
-st.markdown("Nüfus/Koordinat altyapıları gömülüdür. Risk eşiğini aşan merkezleri artık **Excel ve PDF** formatında tek tıkla indirebilirsiniz.")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V9.6: Tam İstikrar & Raporlama)")
+st.markdown("Nüfus/Koordinat altyapıları gömülüdür. Risk eşiğini aşan merkezleri **Excel ve PDF** formatında tek tıkla indirebilirsiniz.")
 
 # --- 1. YÜKLEME VE AYAR MODÜLÜ (SIDEBAR) ---
 st.sidebar.header("📂 Aylık Dinamik Veri Yükleme")
@@ -106,34 +113,29 @@ def calculate_risk_scores(recent_cases, df_pop, df_vax, df_geo, target_date):
     return df_clean[df_clean['Target_Pop'] > 50].sort_values('Risk_Skoru', ascending=False)
 
 def create_pdf_report(dataframe, target_month_str):
-    """Verilen DataFrame'i kusursuz bir PDF Tablosuna dönüştürür."""
     if FPDF is None: return None
-    pdf = FPDF(orientation='L', unit='mm', format='A4') # Yatay (Landscape) geniş tablo için
+    pdf = FPDF(orientation='L', unit='mm', format='A4')
     pdf.add_page()
     
-    # Başlık
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(277, 10, txt=f"YAPAY ZEKA ERKEN UYARI RAPORU ({target_month_str})", ln=True, align='C')
     pdf.set_font("Arial", 'I', 10)
     pdf.cell(277, 10, txt="Sahada oncelikli mudahale edilmesi gereken riskli merkezler listesi.", ln=True, align='C')
     pdf.ln(5)
     
-    # Tablo Sütun Genişlikleri
-    col_widths = [30, 80, 25, 25, 35, 35, 25] # Toplam 255mm
+    col_widths = [30, 80, 25, 25, 35, 35, 25] 
     headers = ["Ilce", "Kurum Adi", "Hedef Nufus", "Asi Hizi(%)", "Korunmasiz Cocuk", "Cevre Vaka Yuku", "Risk Skoru"]
     
-    # Tablo Başlıkları
     pdf.set_font("Arial", 'B', 10)
-    pdf.set_fill_color(200, 220, 255) # Açık mavi arka plan
+    pdf.set_fill_color(200, 220, 255)
     for i, header in enumerate(headers):
         pdf.cell(col_widths[i], 10, str(header), border=1, align='C', fill=True)
     pdf.ln()
     
-    # Tablo Satırları
     pdf.set_font("Arial", '', 9)
     for _, row in dataframe.iterrows():
         pdf.cell(col_widths[0], 10, clean_tr_chars(row['İlçe']), border=1, align='C')
-        pdf.cell(col_widths[1], 10, clean_tr_chars(row['Kurum Adı'])[:45], border=1, align='L') # Çok uzun isimleri kes
+        pdf.cell(col_widths[1], 10, clean_tr_chars(row['Kurum Adı'])[:45], border=1, align='L')
         pdf.cell(col_widths[2], 10, str(int(row['Target_Pop'])), border=1, align='C')
         pdf.cell(col_widths[3], 10, f"%{row['Toplam Aşılama Hızı']:.1f}", border=1, align='C')
         pdf.cell(col_widths[4], 10, str(int(row['Korunmasız_Cocuk'])), border=1, align='C')
@@ -141,7 +143,6 @@ def create_pdf_report(dataframe, target_month_str):
         pdf.cell(col_widths[6], 10, f"{row['Risk_Skoru']:.1f}", border=1, align='C')
         pdf.ln()
         
-    # PDF'i Byte olarak döndür
     return pdf.output(dest='S').encode('latin-1', 'ignore')
 
 # --- ANA İŞLEYİŞ ---
@@ -173,41 +174,38 @@ if file_cases and file_vax:
             ])
             
             # ==========================================
-            # TAB 1: YZ ERKEN UYARI (DİNAMİK EŞİK & RAPORLAMA)
+            # TAB 1: YZ ERKEN UYARI
             # ==========================================
             with tab1:
                 recent_cases = df_cases[df_cases['Tarih'] >= (latest_date - pd.DateOffset(months=6))].copy()
                 df_final = calculate_risk_scores(recent_cases, df_pop.copy(), df_vax.copy(), df_geo.copy(), latest_date)
                 
-                # EŞİĞE GÖRE FİLTRELEME VE RAPORLAMA İÇİN ANA TABLOYU HAZIRLA
                 top_ahb_df = df_final[df_final['Risk_Skoru'] >= risk_esigi].copy()
                 top_ahb_geo = top_ahb_df.dropna(subset=['Lat', 'Lon'])
                 
                 target_month_str = f"{aylar[(latest_date + pd.DateOffset(months=1)).month]} {(latest_date + pd.DateOffset(months=1)).year}"
                 st.info(f"🎯 **Taktik Radar:** {target_month_str} dönemi için Risk Skoru **{risk_esigi} ve üzeri** olan toplam **{len(top_ahb_geo)} merkez** tespit edildi.")
                 
-                # --- İNDİRME (EXPORT) BUTONLARI ---
                 if not top_ahb_df.empty:
                     export_cols = ['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']
                     df_export = top_ahb_df[export_cols].copy()
                     
                     col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
                     
-                    # 1. EXCEL OLUŞTURMA
+                    # Excel Export
                     excel_buffer = io.BytesIO()
                     with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
                         df_export.to_excel(writer, index=False, sheet_name='Riskli Merkezler')
-                    excel_data = excel_buffer.getvalue()
                     
                     col1.download_button(
                         label="📥 Excel Olarak İndir (.xlsx)", 
-                        data=excel_data, 
+                        data=excel_buffer.getvalue(), 
                         file_name=f"Kizamik_Risk_Raporu_{target_month_str}.xlsx", 
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         type="primary"
                     )
                     
-                    # 2. PDF OLUŞTURMA
+                    # PDF Export
                     if FPDF is not None:
                         pdf_data = create_pdf_report(df_export, target_month_str)
                         col2.download_button(
@@ -225,7 +223,6 @@ if file_cases and file_vax:
                     color = '#ff4b4b' if val > 80 else '#ffa500' if val > 60 else ''
                     return f'background-color: {color}'
                 
-                # Tabloda gösterim
                 if not top_ahb_df.empty:
                     st.dataframe(top_ahb_df[['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']].style.map(highlight_risk, subset=['Risk_Skoru']).format({"Toplam Aşılama Hızı": "{:.1f}", "Risk_Skoru": "{:.1f}"}), use_container_width=True)
 
@@ -241,41 +238,47 @@ if file_cases and file_vax:
                 if not top_ahb_geo.empty:
                     hover_texts = top_ahb_geo['Kurum Adı'] + "<br>Vaka Yükü: " + top_ahb_geo['Cember_Vaka_Yuk'].astype(str) + "<br>Skor: " + top_ahb_geo['Risk_Skoru'].astype(str)
                     fig_map.add_trace(go.Scattermapbox(lat=top_ahb_geo['Lat'], lon=top_ahb_geo['Lon'], mode='markers', marker=dict(size=14, color='cyan', opacity=0.9, symbol='circle'), text=hover_texts, name=f'Kritik Merkezler (>{risk_esigi})', hoverinfo='text'))
-                else:
-                    st.success(f"✅ Harika Haber! Şehirde risk puanı {risk_esigi} üzerinde olan merkez bulunamadı.")
                 
                 fig_map.update_layout(mapbox_style="carto-darkmatter", mapbox_center_lon=28.97, mapbox_center_lat=41.05, mapbox_zoom=9.5, margin={"r":0,"t":0,"l":0,"b":0})
                 st.plotly_chart(fig_map, use_container_width=True)
 
             # ==========================================
-            # TAB 2 & 3: TARİHSEL VE GELECEK TAHMİNİ
+            # TAB 2: TARİHSEL ANALİZ
             # ==========================================
             with tab2:
                 df_cases_valid = df_cases.dropna(subset=['Tarih']).copy()
                 df_cases_valid['Yıl_Ay'] = df_cases_valid['Tarih'].dt.strftime('%Y-%m') 
                 st.plotly_chart(px.line(df_cases_valid.groupby('Yıl_Ay').size().reset_index(name='Vaka Sayısı'), x='Yıl_Ay', y='Vaka Sayısı', markers=True, title="Tarihsel Eğri"), use_container_width=True)
 
+            # ==========================================
+            # TAB 3: HOLT-WINTERS GELECEK TAHMİNİ
+            # ==========================================
             with tab3:
                 if ExponentialSmoothing:
                     try:
-                        ts_df = df_cases.dropna(subset=['Tarih']).groupby(pd.Grouper(key='Tarih', freq='ME' if hasattr(pd.Grouper, 'freq') else 'M')).size()
-                        ts_df = ts_df.reindex(pd.date_range(ts_df.index.min(), latest_date, freq='ME' if hasattr(pd.Grouper, 'freq') else 'M'), fill_value=0)
+                        ts_df = df_cases.dropna(subset=['Tarih']).groupby(pd.Grouper(key='Tarih', freq=FREQ_M)).size()
+                        ts_df = ts_df.reindex(pd.date_range(ts_df.index.min(), latest_date, freq=FREQ_M), fill_value=0)
+                        
                         if len(ts_df) >= 12:
                             model = ExponentialSmoothing(ts_df, trend='add', seasonal='add', seasonal_periods=12 if len(ts_df)>=24 else None, initialization_method="estimated").fit()
                             forecast = model.forecast(6).apply(lambda x: max(0, x))
+                            
                             st.error(f"🚨 ÖNGÖRÜ: Gelecek 6 ayın zirvesi **{aylar.get(forecast.idxmax().month)} {forecast.idxmax().year}** (Tahmini Vaka: {int(forecast.max())})")
+                            
                             fig_hw = go.Figure()
                             fig_hw.add_trace(go.Scatter(x=ts_df.index, y=ts_df.values, mode='lines+markers', name='Gerçekleşen', line=dict(color='#1f77b4', width=2)))
                             fig_hw.add_trace(go.Scatter(x=forecast.index, y=forecast.values, mode='lines+markers', name='Tahmin', line=dict(color='#00ff00', width=3, dash='dot')))
                             fig_hw.update_layout(template="plotly_dark", hovermode="x unified")
                             st.plotly_chart(fig_hw, use_container_width=True)
-                    except: pass
+                    except Exception as e:
+                        st.error(f"Tahmin motoru hatası: {e}")
 
             # ==========================================
             # TAB 4: BACKTESTING
             # ==========================================
             with tab4:
-                valid_months = pd.date_range(start=df_cases['Tarih'].min() + pd.DateOffset(months=6), end=latest_date, freq='ME' if hasattr(pd.Grouper, 'freq') else 'M').strftime('%Y-%m').tolist()
+                min_date = df_cases['Tarih'].min() + pd.DateOffset(months=6)
+                valid_months = pd.date_range(start=min_date, end=latest_date, freq=FREQ_M).strftime('%Y-%m').tolist()
                 test_month_str = st.selectbox("Sınamak İstediğiniz Ayı Seçin:", valid_months[::-1])
                 
                 if st.button("🚀 Kör Testi Başlat", type="primary"):
