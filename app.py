@@ -10,15 +10,14 @@ from datetime import datetime
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V7: Gömülü Koordinat Sistemi)")
-st.markdown("Koordinat altyapısı sisteme entegre edilmiştir. Sadece aylık değişen 3 ana veriyi yüklemeniz yeterlidir.")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V8: Otonom Altyapı)")
+st.markdown("Nüfus ve Koordinat altyapıları sisteme gömülmüştür. Sadece dinamik değişen **Vaka** ve **Aşı** verilerini yükleyiniz.")
 
 # --- 1. YÜKLEME MODÜLÜ (SIDEBAR) ---
-st.sidebar.header("📂 Aylık Veri Yükleme Paneli")
+st.sidebar.header("📂 Aylık Dinamik Veri Yükleme")
 file_cases = st.sidebar.file_uploader("1. Vaka Listesi (Kızamık.xlsx/csv)", type=["csv", "xlsx"])
-file_pop = st.sidebar.file_uploader("2. Nüfus Verisi (Nüfus.xlsx/csv)", type=["csv", "xlsx"])
-file_vax = st.sidebar.file_uploader("3. Aşı Performansı (KKK.xlsx/csv)", type=["csv", "xlsx"])
-# 4. Dosya yükleyici KALDIRILDI!
+file_vax = st.sidebar.file_uploader("2. Aşı Performansı (KKK.xlsx/csv)", type=["csv", "xlsx"])
+# Nüfus ve Koordinat yükleyicileri KALDIRILDI! (Sisteme Gömüldü)
 
 aylar = {1: 'Ocak', 2: 'Şubat', 3: 'Mart', 4: 'Nisan', 5: 'Mayıs', 6: 'Haziran', 
          7: 'Temmuz', 8: 'Ağustos', 9: 'Eylül', 10: 'Ekim', 11: 'Kasım', 12: 'Aralık'}
@@ -96,26 +95,38 @@ def calculate_risk_scores(recent_cases, df_pop, df_vax, df_geo, target_date):
 
 
 # --- ANA İŞLEYİŞ ---
-if file_cases and file_pop and file_vax:
-    with st.spinner('Sistem Başlatılıyor ve Gömülü Koordinatlar Okunuyor...'):
+if file_cases and file_vax:
+    with st.spinner('Sistem Başlatılıyor ve Gömülü Altyapı Verileri Okunuyor...'):
         try:
             # 1. Kullanıcının Yüklediği Değişken Dosyalar
             df_cases = pd.read_csv(file_cases) if file_cases.name.endswith('.csv') else pd.read_excel(file_cases)
-            df_pop = pd.read_csv(file_pop) if file_pop.name.endswith('.csv') else pd.read_excel(file_pop)
             df_vax = pd.read_csv(file_vax) if file_vax.name.endswith('.csv') else pd.read_excel(file_vax)
 
-            # 2. SİSTEME GÖMÜLÜ SABİT DOSYAYI OTOMATİK OKUMA
+            # 2. SİSTEME GÖMÜLÜ SABİT DOSYALARI (KOORDİNAT VE NÜFUS) OTOMATİK OKUMA
             geo_file_csv = 'ahb_geocoded.csv'
             geo_file_xlsx = 'ahb_geocoded.xlsx'
+            pop_file_csv = 'nufus_verisi.csv'
+            pop_file_xlsx = 'nufus_verisi.xlsx'
             
+            # Koordinat Okuma
             if os.path.exists(geo_file_csv):
                 df_geo = pd.read_csv(geo_file_csv)
             elif os.path.exists(geo_file_xlsx):
                 df_geo = pd.read_excel(geo_file_xlsx)
             else:
-                st.error("🚨 KRİTİK HATA: 'ahb_geocoded.csv' veya 'ahb_geocoded.xlsx' dosyası sistem klasöründe bulunamadı! Lütfen dosyayı GitHub deponuza yükleyin.")
-                st.stop() # İşlemi durdur
+                st.error("🚨 KRİTİK HATA: 'ahb_geocoded' (Koordinat) dosyası sistemde bulunamadı!")
+                st.stop()
 
+            # Nüfus Okuma
+            if os.path.exists(pop_file_csv):
+                df_pop = pd.read_csv(pop_file_csv)
+            elif os.path.exists(pop_file_xlsx):
+                df_pop = pd.read_excel(pop_file_xlsx)
+            else:
+                st.error("🚨 KRİTİK HATA: 'nufus_verisi' (Nüfus) dosyası sistemde bulunamadı! Lütfen GitHub'a ekleyin.")
+                st.stop()
+
+            # Vaka Tarih ve Koordinat Hazırlığı
             df_cases['Tarih'] = pd.to_datetime(df_cases['Tarih'], errors='coerce')
             latest_date = df_cases['Tarih'].max()
             if 'Lat' in df_cases.columns and 'Lon' in df_cases.columns:
@@ -130,7 +141,7 @@ if file_cases and file_pop and file_vax:
                 df_final = calculate_risk_scores(recent_cases, df_pop.copy(), df_vax.copy(), df_geo.copy(), latest_date)
                 
                 target_str = f"{aylar[(latest_date + pd.DateOffset(months=1)).month]} {(latest_date + pd.DateOffset(months=1)).year}"
-                st.info(f"🎯 **Canlı Radar:** Gömülü koordinatlar kullanılarak **{target_str}** ayı hedefleri belirlendi.")
+                st.info(f"🎯 **Canlı Radar:** Gömülü altyapı kullanılarak **{target_str}** ayı hedefleri belirlendi.")
                 
                 def highlight_risk(val):
                     color = '#ff4b4b' if val > 80 else '#ffa500' if val > 60 else ''
@@ -206,4 +217,4 @@ if file_cases and file_pop and file_vax:
         except Exception as e:
             st.error(f"Hata oluştu: {e}")
 else:
-    st.info("👆 Lütfen sistemin çalışması için aylık 3 ana dosyayı yükleyin.")
+    st.info("👆 Lütfen sistemin çalışması için aylık 'Vaka' ve 'Aşı' dosyalarını sol menüden yükleyin.")
