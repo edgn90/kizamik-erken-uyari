@@ -10,14 +10,13 @@ from datetime import datetime
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V8: Otonom Altyapı)")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V8.1: Otonom Altyapı)")
 st.markdown("Nüfus ve Koordinat altyapıları sisteme gömülmüştür. Sadece dinamik değişen **Vaka** ve **Aşı** verilerini yükleyiniz.")
 
 # --- 1. YÜKLEME MODÜLÜ (SIDEBAR) ---
 st.sidebar.header("📂 Aylık Dinamik Veri Yükleme")
 file_cases = st.sidebar.file_uploader("1. Vaka Listesi (Kızamık.xlsx/csv)", type=["csv", "xlsx"])
 file_vax = st.sidebar.file_uploader("2. Aşı Performansı (KKK.xlsx/csv)", type=["csv", "xlsx"])
-# Nüfus ve Koordinat yükleyicileri KALDIRILDI! (Sisteme Gömüldü)
 
 aylar = {1: 'Ocak', 2: 'Şubat', 3: 'Mart', 4: 'Nisan', 5: 'Mayıs', 6: 'Haziran', 
          7: 'Temmuz', 8: 'Ağustos', 9: 'Eylül', 10: 'Ekim', 11: 'Kasım', 12: 'Aralık'}
@@ -108,25 +107,18 @@ if file_cases and file_vax:
             pop_file_csv = 'nufus_verisi.csv'
             pop_file_xlsx = 'nufus_verisi.xlsx'
             
-            # Koordinat Okuma
-            if os.path.exists(geo_file_csv):
-                df_geo = pd.read_csv(geo_file_csv)
-            elif os.path.exists(geo_file_xlsx):
-                df_geo = pd.read_excel(geo_file_xlsx)
+            if os.path.exists(geo_file_csv): df_geo = pd.read_csv(geo_file_csv)
+            elif os.path.exists(geo_file_xlsx): df_geo = pd.read_excel(geo_file_xlsx)
             else:
                 st.error("🚨 KRİTİK HATA: 'ahb_geocoded' (Koordinat) dosyası sistemde bulunamadı!")
                 st.stop()
 
-            # Nüfus Okuma
-            if os.path.exists(pop_file_csv):
-                df_pop = pd.read_csv(pop_file_csv)
-            elif os.path.exists(pop_file_xlsx):
-                df_pop = pd.read_excel(pop_file_xlsx)
+            if os.path.exists(pop_file_csv): df_pop = pd.read_csv(pop_file_csv)
+            elif os.path.exists(pop_file_xlsx): df_pop = pd.read_excel(pop_file_xlsx)
             else:
-                st.error("🚨 KRİTİK HATA: 'nufus_verisi' (Nüfus) dosyası sistemde bulunamadı! Lütfen GitHub'a ekleyin.")
+                st.error("🚨 KRİTİK HATA: 'nufus_verisi' (Nüfus) dosyası sistemde bulunamadı!")
                 st.stop()
 
-            # Vaka Tarih ve Koordinat Hazırlığı
             df_cases['Tarih'] = pd.to_datetime(df_cases['Tarih'], errors='coerce')
             latest_date = df_cases['Tarih'].max()
             if 'Lat' in df_cases.columns and 'Lon' in df_cases.columns:
@@ -177,7 +169,7 @@ if file_cases and file_vax:
                 epi_data = df_cases.groupby('Yıl_Ay').size().reset_index(name='Vaka Sayısı')
                 st.plotly_chart(px.line(epi_data[epi_data['Yıl_Ay'] != 'NaT'], x='Yıl_Ay', y='Vaka Sayısı', markers=True, title="Salgın Eğrisi"), use_container_width=True)
 
-            # --- TAB 3: BACKTESTING ---
+            # --- TAB 3: BACKTESTING (HARİTA EKLENDİ) ---
             with tab3:
                 st.markdown("### 🧪 Model Doğrulama ve Kör Test (Backtesting)")
                 min_date = df_cases['Tarih'].min() + pd.DateOffset(months=6)
@@ -205,7 +197,22 @@ if file_cases and file_vax:
                             else:
                                 top_lats = top_30_predicted['Lat'].values
                                 top_lons = top_30_predicted['Lon'].values
-                                hits = sum(1 for _, row in target_cases.iterrows() if np.any(haversine_vectorized(row['Lat'], row['Lon'], top_lats, top_lons) <= 3.0))
+                                
+                                hits = 0
+                                hit_cases_lat, hit_cases_lon = [], []
+                                miss_cases_lat, miss_cases_lon = [], []
+                                
+                                # Gerçekleşen her bir vakanın radara yakalanıp yakalanmadığını bul
+                                for _, row in target_cases.iterrows():
+                                    dists = haversine_vectorized(row['Lat'], row['Lon'], top_lats, top_lons)
+                                    if np.any(dists <= 3.0): 
+                                        hits += 1
+                                        hit_cases_lat.append(row['Lat'])
+                                        hit_cases_lon.append(row['Lon'])
+                                    else:
+                                        miss_cases_lat.append(row['Lat'])
+                                        miss_cases_lon.append(row['Lon'])
+                                
                                 accuracy = (hits / len(target_cases)) * 100
                                 
                                 st.success(f"✅ Test Tamamlandı! Dönem: {test_month_str}")
@@ -213,6 +220,39 @@ if file_cases and file_vax:
                                 col_a.metric("Gerçekleşen Vaka", len(target_cases))
                                 col_b.metric("Yakalanan Vaka", hits)
                                 col_c.metric("İsabet Oranı", f"%{accuracy:.1f}")
+                                
+                                # --- GERİ EKLENEN HARİTA BÖLÜMÜ ---
+                                st.markdown("#### 🗺️ Çarpışma Haritası (Tahminler vs Gerçekleşenler)")
+                                st.markdown("Açık Mavi: Modelin 1 ay önce çizdiği 3KM radar çemberleri. Yeşil Noktalar: Radarın yakaladığı vakalar. Kırmızı Noktalar: Radarın dışına düşen vakalar.")
+                                fig_test = go.Figure()
+                                
+                                hover_pred = top_30_predicted['Kurum Adı'] + "<br>Model Skoru: " + top_30_predicted['Risk_Skoru'].astype(str)
+                                
+                                # Radar Alanları (Şeffaf daireler)
+                                fig_test.add_trace(go.Scattermapbox(lat=top_lats, lon=top_lons, mode='markers', 
+                                                                   marker=dict(size=25, color='rgba(0, 255, 255, 0.3)'), 
+                                                                   name='Tahmin Edilen 3KM Radar Alanları', hoverinfo='none'))
+                                # Radar Merkezleri (Parlak mavi)
+                                fig_test.add_trace(go.Scattermapbox(lat=top_lats, lon=top_lons, mode='markers', 
+                                                                   marker=dict(size=8, color='cyan'), 
+                                                                   text=hover_pred, name='Tahmin Merkezleri', hoverinfo='text'))
+                                
+                                # Başarılı Yakalananlar (Yeşil)
+                                if hits > 0:
+                                    fig_test.add_trace(go.Scattermapbox(lat=hit_cases_lat, lon=hit_cases_lon, mode='markers', 
+                                                                       marker=dict(size=8, color='#00ff00'), 
+                                                                       name='Yakalanan Vakalar (Başarı)'))
+                                
+                                # Kaçanlar (Kırmızı)
+                                if len(miss_cases_lat) > 0:
+                                    fig_test.add_trace(go.Scattermapbox(lat=miss_cases_lat, lon=miss_cases_lon, mode='markers', 
+                                                                       marker=dict(size=8, color='#ff0000'), 
+                                                                       name='Kaçan Vakalar (Hata)'))
+                                                                       
+                                fig_test.update_layout(mapbox_style="carto-darkmatter", mapbox_center_lon=28.97, mapbox_center_lat=41.05, 
+                                                      mapbox_zoom=9.5, margin={"r":0,"t":0,"l":0,"b":0},
+                                                      legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
+                                st.plotly_chart(fig_test, use_container_width=True)
 
         except Exception as e:
             st.error(f"Hata oluştu: {e}")
