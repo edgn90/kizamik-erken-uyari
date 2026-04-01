@@ -16,13 +16,19 @@ except ImportError:
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V9.3: 4 Modüllü Entegre Sistem)")
-st.markdown("Nüfus ve Koordinat altyapıları sisteme gömülmüştür. Sadece dinamik değişen **Vaka** ve **Aşı** verilerini yükleyiniz.")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V9.4: Dinamik Risk Eşiği)")
+st.markdown("Nüfus ve Koordinat altyapıları sisteme gömülmüştür. Riskli merkezler artık sabit bir sayıya göre değil, sizin belirlediğiniz **Eşik Değere** göre otonom filtrelenir.")
 
-# --- 1. YÜKLEME MODÜLÜ (SIDEBAR) ---
+# --- 1. YÜKLEME VE AYAR MODÜLÜ (SIDEBAR) ---
 st.sidebar.header("📂 Aylık Dinamik Veri Yükleme")
 file_cases = st.sidebar.file_uploader("1. Vaka Listesi (Kızamık.xlsx/csv)", type=["csv", "xlsx"])
 file_vax = st.sidebar.file_uploader("2. Aşı Performansı (KKK.xlsx/csv)", type=["csv", "xlsx"])
+
+st.sidebar.markdown("---")
+st.sidebar.header("🎛️ Radar Ayarları")
+# YENİ EKLENEN ÖZELLİK: DİNAMİK RİSK EŞİĞİ
+risk_esigi = st.sidebar.slider("🚨 Kırmızı Alarm Eşiği (Risk Skoru)", min_value=40, max_value=100, value=70, step=5, 
+                               help="Sadece bu puanın üzerindeki merkezler 'Kritik' kabul edilip haritada gösterilir.")
 
 aylar = {1: 'Ocak', 2: 'Şubat', 3: 'Mart', 4: 'Nisan', 5: 'Mayıs', 6: 'Haziran', 
          7: 'Temmuz', 8: 'Ağustos', 9: 'Eylül', 10: 'Ekim', 11: 'Kasım', 12: 'Aralık'}
@@ -134,7 +140,7 @@ if file_cases and file_vax:
                 df_cases['Lat'] = pd.to_numeric(df_cases['Lat'], errors='coerce')
                 df_cases['Lon'] = pd.to_numeric(df_cases['Lon'], errors='coerce')
 
-            # --- SEKMELER (4 ADET OLARAK GÜNCELLENDİ) ---
+            # --- SEKMELER (4 ADET) ---
             tab1, tab2, tab3, tab4 = st.tabs([
                 "🎯 YZ ERKEN UYARI", 
                 "📊 TARİHSEL ANALİZ", 
@@ -143,20 +149,24 @@ if file_cases and file_vax:
             ])
             
             # ==========================================
-            # TAB 1: YZ ERKEN UYARI
+            # TAB 1: YZ ERKEN UYARI (DİNAMİK EŞİK)
             # ==========================================
             with tab1:
                 recent_cases = df_cases[df_cases['Tarih'] >= (latest_date - pd.DateOffset(months=6))].copy()
                 df_final = calculate_risk_scores(recent_cases, df_pop.copy(), df_vax.copy(), df_geo.copy(), latest_date)
                 
+                # SABİT 30 YERİNE, KULLANICININ EŞİĞİNE GÖRE FİLTRELEME
+                top_ahb = df_final[df_final['Risk_Skoru'] >= risk_esigi].dropna(subset=['Lat', 'Lon'])
+                
                 target_str = f"{aylar[(latest_date + pd.DateOffset(months=1)).month]} {(latest_date + pd.DateOffset(months=1)).year}"
-                st.info(f"🎯 **Canlı Radar:** Gömülü altyapı kullanılarak **{target_str}** ayı hedefleri belirlendi.")
+                st.info(f"🎯 **Taktik Radar:** {target_str} dönemi için Risk Skoru **{risk_esigi} ve üzeri** olan toplam **{len(top_ahb)} merkez** tespit edildi.")
                 
                 def highlight_risk(val):
                     color = '#ff4b4b' if val > 80 else '#ffa500' if val > 60 else ''
                     return f'background-color: {color}'
                 
-                st.dataframe(df_final[['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']].head(30).style.map(highlight_risk, subset=['Risk_Skoru']).format({"Toplam Aşılama Hızı": "{:.1f}", "Risk_Skoru": "{:.1f}"}), use_container_width=True)
+                # Tabloda sadece eşiği geçenleri göster
+                st.dataframe(df_final[df_final['Risk_Skoru'] >= risk_esigi][['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']].style.map(highlight_risk, subset=['Risk_Skoru']).format({"Toplam Aşılama Hızı": "{:.1f}", "Risk_Skoru": "{:.1f}"}), use_container_width=True)
 
                 st.markdown("---")
                 st.subheader("🗺️ Taktik Sürveyans Haritası")
@@ -170,14 +180,13 @@ if file_cases and file_vax:
                     fig_map.add_trace(go.Densitymapbox(lat=recent_cases_geo['Lat'], lon=recent_cases_geo['Lon'], z=recent_cases_geo['Vaka_Agirligi'],
                                                        radius=12, colorscale='Inferno', name='Taze Vaka Yoğunluğu', opacity=0.7))
                 
-                top_ahb = df_final.head(30).dropna(subset=['Lat', 'Lon'])
                 if not top_ahb.empty:
                     hover_texts = top_ahb['Kurum Adı'] + "<br>Zaman Ağırlıklı Vaka Yükü: " + top_ahb['Cember_Vaka_Yuk'].astype(str) + "<br>Skor: " + top_ahb['Risk_Skoru'].astype(str)
                     fig_map.add_trace(go.Scattermapbox(lat=top_ahb['Lat'], lon=top_ahb['Lon'], mode='markers', 
                                                        marker=dict(size=14, color='cyan', opacity=0.9, symbol='circle'), 
-                                                       text=hover_texts, name='Kritik ASM Merkezleri', hoverinfo='text'))
+                                                       text=hover_texts, name=f'Kritik Merkezler (>{risk_esigi})', hoverinfo='text'))
                 else:
-                    st.warning("⚠️ Mavi iğneler çizilemedi. Nüfus ve Koordinat eşleşmesi başarısız.")
+                    st.success(f"✅ Harika Haber! Şehirde risk puanı {risk_esigi} üzerinde olan hiçbir merkez bulunamadı. Bu ay lojistik operasyona gerek yok.")
                 
                 fig_map.update_layout(mapbox_style="carto-darkmatter", mapbox_center_lon=28.97, mapbox_center_lat=41.05, 
                                       mapbox_zoom=9.5, margin={"r":0,"t":0,"l":0,"b":0})
@@ -241,7 +250,7 @@ if file_cases and file_vax:
                             
                             fig_hw = go.Figure()
                             
-                            # GÖRSEL HATA BURADA ÇÖZÜLDÜ: Renk 'white' yerine '#1f77b4' (Mavi) yapıldı.
+                            # GÖRSEL HATA BURADA ÇÖZÜLÜ DURUMDA: Renk '#1f77b4' (Mavi)
                             fig_hw.add_trace(go.Scatter(x=ts_df.index, y=ts_df.values, mode='lines+markers', name='Gerçekleşen Vakalar', line=dict(color='#1f77b4', width=2)))
                             
                             fig_hw.add_trace(go.Scatter(x=forecast.index, y=forecast.values, mode='lines+markers', name='Holt-Winters YZ Tahmini', line=dict(color='#00ff00', width=3, dash='dot')))
@@ -258,7 +267,7 @@ if file_cases and file_vax:
                         st.error(f"Tahmin motorunda hata oluştu (Veriniz çok kısa veya düzensiz olabilir): {e}")
 
             # ==========================================
-            # TAB 4: BACKTESTING
+            # TAB 4: BACKTESTING (DİNAMİK EŞİK UYGULANDI)
             # ==========================================
             with tab4:
                 st.markdown("### 🧪 Model Doğrulama ve Kör Test (Backtesting)")
@@ -285,13 +294,15 @@ if file_cases and file_vax:
                             st.warning("Gerçekleşmiş vaka kaydı yok.")
                         else:
                             predicted_df = calculate_risk_scores(context_cases, df_pop.copy(), df_vax.copy(), df_geo.copy(), context_end)
-                            top_30_predicted = predicted_df.head(30).dropna(subset=['Lat', 'Lon'])
                             
-                            if top_30_predicted.empty:
-                                st.error("Eşleşme hatası! Mavi merkezler bulunamıyor.")
+                            # TEST EKRANINDA DA EŞİK DEĞER KULLANILDI
+                            top_test_ahb = predicted_df[predicted_df['Risk_Skoru'] >= risk_esigi].dropna(subset=['Lat', 'Lon'])
+                            
+                            if top_test_ahb.empty:
+                                st.warning(f"Belirlediğiniz eşiği ({risk_esigi}) geçen merkez bulunamadı. Eşiği düşürerek tekrar test edebilirsiniz.")
                             else:
-                                top_lats = top_30_predicted['Lat'].values
-                                top_lons = top_30_predicted['Lon'].values
+                                top_lats = top_test_ahb['Lat'].values
+                                top_lons = top_test_ahb['Lon'].values
                                 
                                 hits = 0
                                 hit_cases_lat, hit_cases_lon = [], []
@@ -309,7 +320,7 @@ if file_cases and file_vax:
                                 
                                 accuracy = (hits / len(target_cases)) * 100
                                 
-                                st.success(f"✅ Test Tamamlandı! Dönem: {test_month_str}")
+                                st.success(f"✅ Risk Skoru {risk_esigi} Üzeri Olan Merkezlerle Yapılan Test Sonucu:")
                                 col_a, col_b, col_c = st.columns(3)
                                 col_a.metric("Gerçekleşen Toplam Vaka", len(target_cases))
                                 col_b.metric("Radarımızın Yakaladığı Vaka", hits)
@@ -319,7 +330,7 @@ if file_cases and file_vax:
                                 st.markdown("Açık Mavi: Modelin 1 ay önce çizdiği 3KM radar çemberleri. Yeşil Noktalar: Radarın yakaladığı vakalar. Kırmızı Noktalar: Radarın dışına düşen vakalar.")
                                 fig_test = go.Figure()
                                 
-                                hover_pred = top_30_predicted['Kurum Adı'] + "<br>Model Skoru: " + top_30_predicted['Risk_Skoru'].astype(str)
+                                hover_pred = top_test_ahb['Kurum Adı'] + "<br>Model Skoru: " + top_test_ahb['Risk_Skoru'].astype(str)
                                 
                                 fig_test.add_trace(go.Scattermapbox(lat=top_lats, lon=top_lons, mode='markers', 
                                                                    marker=dict(size=25, color='rgba(0, 255, 255, 0.3)'), 
