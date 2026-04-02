@@ -30,8 +30,8 @@ except ValueError:
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V9.7: Makine Dairesi)")
-st.markdown("Nüfus ve Koordinat altyapıları sisteme gömülmüştür. Formül ağırlıklarını değiştirerek **Filyasyon (Akut)** veya **Aşılama (Koruyucu)** odaklı stratejiler kurabilirsiniz.")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V9.8: Akıllı Harita & Zengin Bilgi)")
+st.markdown("Nüfus ve Koordinat altyapıları sisteme gömülmüştür. Haritadaki noktaların üzerine gelerek detaylı bilgi kartlarını inceleyebilirsiniz.")
 
 # --- 1. YÜKLEME VE AYAR MODÜLÜ (SIDEBAR) ---
 st.sidebar.header("📂 Aylık Dinamik Veri Yükleme")
@@ -43,7 +43,7 @@ st.sidebar.header("🎛️ Radar Ayarları")
 risk_esigi = st.sidebar.slider("🚨 Kırmızı Alarm Eşiği (Risk Skoru)", min_value=40, max_value=100, value=70, step=5, 
                                help="Sadece bu puanın üzerindeki merkezler listeye ve raporlara dahil edilir.")
 
-# --- YENİ EKLENEN ÖZELLİK: DİNAMİK AĞIRLIK MOTORU ---
+# DİNAMİK AĞIRLIK MOTORU
 st.sidebar.markdown("---")
 st.sidebar.header("⚖️ Algoritma Motoru")
 vaka_agirligi = st.sidebar.slider("🔥 Vaka Yükü Ağırlığı (%)", min_value=10, max_value=90, value=50, step=10, 
@@ -60,7 +60,6 @@ def tr_upper(text):
     return str(text).replace('i', 'İ').replace('ı', 'I').replace('i̇', 'İ').upper().strip()
 
 def clean_tr_chars(text):
-    """PDF içindeki olası font hatalarını önlemek için Türkçe karakterleri standart Latin harflerine çevirir."""
     tr_map = {'ç':'c', 'ğ':'g', 'ı':'i', 'ö':'o', 'ş':'s', 'ü':'u', 'Ç':'C', 'Ğ':'G', 'İ':'I', 'Ö':'O', 'Ş':'S', 'Ü':'U'}
     res = str(text)
     for k, v in tr_map.items(): 
@@ -79,7 +78,6 @@ def extract_ahb_no(text):
     nums = re.findall(r'\d+', str(text))
     return str(int(nums[0])) if nums else "0" 
 
-# DİKKAT: Fonksiyona weight_case ve weight_vuln parametreleri eklendi!
 def calculate_risk_scores(recent_cases, df_pop, df_vax, df_geo, target_date, weight_case, weight_vuln):
     df_pop['Target_Pop'] = pd.to_numeric(df_pop['Bebek Sayısı'], errors='coerce').fillna(0) + pd.to_numeric(df_pop['Çocuk Sayısı'], errors='coerce').fillna(0)
     df_vax['Toplam Aşılama Hızı'] = pd.to_numeric(df_vax['Toplam Aşılama Hızı'], errors='coerce')
@@ -117,7 +115,6 @@ def calculate_risk_scores(recent_cases, df_pop, df_vax, df_geo, target_date, wei
 
     max_vuln, max_cases = df_clean['Korunmasız_Cocuk'].max(), df_clean['Cember_Vaka_Yuk'].max()
     
-    # KULLANICININ BELİRLEDİĞİ AĞIRLIKLAR FORMÜLE EKLENDİ
     df_clean['Ham_Risk'] = ((df_clean['Korunmasız_Cocuk'] / max_vuln if max_vuln > 0 else 0) * weight_vuln + (df_clean['Cember_Vaka_Yuk'] / max_cases if max_cases > 0 else 0) * weight_case) * 100
     df_clean['Ceza_Puani'] = (df_clean['Toplam Aşılama Hızı'].apply(lambda x: max(0, 95 - x)) ** 1.3) * 0.4 
     df_clean['Risk_Skoru'] = (df_clean['Ham_Risk'] + df_clean['Ceza_Puani']).apply(lambda x: min(100, x)).round(1)
@@ -185,7 +182,6 @@ if file_cases and file_vax:
                 "🧪 BACKTESTING (Model Sınama)"
             ])
             
-            # KULLANICI AĞIRLIKLARININ KESİRLİ HALİ OLUŞTURULDU
             w_case = vaka_agirligi / 100.0
             w_vuln = vuln_agirligi / 100.0
 
@@ -194,8 +190,6 @@ if file_cases and file_vax:
             # ==========================================
             with tab1:
                 recent_cases = df_cases[df_cases['Tarih'] >= (latest_date - pd.DateOffset(months=6))].copy()
-                
-                # FONKSİYON YENİ AĞIRLIK PARAMETRELERİ İLE ÇAĞRILIYOR
                 df_final = calculate_risk_scores(recent_cases, df_pop.copy(), df_vax.copy(), df_geo.copy(), latest_date, w_case, w_vuln)
                 
                 top_ahb_df = df_final[df_final['Risk_Skoru'] >= risk_esigi].copy()
@@ -207,33 +201,15 @@ if file_cases and file_vax:
                 if not top_ahb_df.empty:
                     export_cols = ['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']
                     df_export = top_ahb_df[export_cols].copy()
-                    
                     col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
                     
-                    # Excel İndirme
                     excel_buffer = io.BytesIO()
                     with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
                         df_export.to_excel(writer, index=False, sheet_name='Riskli Merkezler')
-                    col1.download_button(
-                        label="📥 Excel Olarak İndir (.xlsx)", 
-                        data=excel_buffer.getvalue(), 
-                        file_name=f"Kizamik_Risk_Raporu_{target_month_str}.xlsx", 
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        type="primary"
-                    )
+                    col1.download_button(label="📥 Excel Olarak İndir", data=excel_buffer.getvalue(), file_name=f"Kizamik_Risk_{target_month_str}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
                     
-                    # PDF İndirme
                     if FPDF is not None:
-                        pdf_data = create_pdf_report(df_export, target_month_str)
-                        col2.download_button(
-                            label="📄 PDF Olarak İndir (.pdf)", 
-                            data=pdf_data, 
-                            file_name=f"Kizamik_Risk_Raporu_{target_month_str}.pdf", 
-                            mime="application/pdf",
-                            type="primary"
-                        )
-                    else:
-                        col2.error("PDF için 'fpdf' kütüphanesi gerekli.")
+                        col2.download_button(label="📄 PDF Olarak İndir", data=create_pdf_report(df_export, target_month_str), file_name=f"Kizamik_Risk_{target_month_str}.pdf", mime="application/pdf", type="primary")
 
                 st.markdown("---")
                 def highlight_risk(val):
@@ -250,145 +226,110 @@ if file_cases and file_vax:
                 if not recent_cases_geo.empty:
                     recent_cases_geo['Gun_Farki'] = (latest_date - recent_cases_geo['Tarih']).dt.days
                     recent_cases_geo['Vaka_Agirligi'] = 0.5 ** (recent_cases_geo['Gun_Farki'].apply(lambda x: max(0, x)) / 30.0)
-                    fig_map.add_trace(go.Densitymapbox(lat=recent_cases_geo['Lat'], lon=recent_cases_geo['Lon'], z=recent_cases_geo['Vaka_Agirligi'], radius=12, colorscale='Inferno', name='Taze Vaka Yoğunluğu', opacity=0.7))
+                    fig_map.add_trace(go.Densitymapbox(lat=recent_cases_geo['Lat'], lon=recent_cases_geo['Lon'], z=recent_cases_geo['Vaka_Agirligi'], radius=12, colorscale='Inferno', opacity=0.7, name="Taze Vaka Yoğunluğu"))
                 
                 if not top_ahb_geo.empty:
-                    hover_texts = top_ahb_geo['Kurum Adı'] + "<br>Vaka Yükü: " + top_ahb_geo['Cember_Vaka_Yuk'].astype(str) + "<br>Skor: " + top_ahb_geo['Risk_Skoru'].astype(str)
-                    fig_map.add_trace(go.Scattermapbox(lat=top_ahb_geo['Lat'], lon=top_ahb_geo['Lon'], mode='markers', marker=dict(size=14, color='cyan', opacity=0.9, symbol='circle'), text=hover_texts, name=f'Kritik Merkezler (>{risk_esigi})', hoverinfo='text'))
-                else:
-                    st.success(f"✅ Harika Haber! Şehirde risk puanı {risk_esigi} üzerinde olan merkez bulunamadı.")
+                    # YENİ EKLENEN HTML ZENGİN BİLGİ KARTI (HOVER)
+                    hover_texts = (
+                        "<b>" + top_ahb_geo['Kurum Adı'] + "</b><br><br>" +
+                        "📍 İlçe: " + top_ahb_geo['İlçe'] + "<br>" +
+                        "🎯 Risk Skoru: <b>" + top_ahb_geo['Risk_Skoru'].astype(str) + "</b><br>" +
+                        "🔥 Vaka Yükü: " + top_ahb_geo['Cember_Vaka_Yuk'].astype(str) + "<br>" +
+                        "🛡️ Korunmasız Çocuk: " + top_ahb_geo['Korunmasız_Cocuk'].astype(str) + "<br>" +
+                        "💉 Aşı Hızı: %" + top_ahb_geo['Toplam Aşılama Hızı'].astype(str)
+                    )
+                    
+                    fig_map.add_trace(go.Scattermapbox(
+                        lat=top_ahb_geo['Lat'], 
+                        lon=top_ahb_geo['Lon'], 
+                        mode='markers', 
+                        marker=dict(size=14, color='cyan', opacity=0.9), 
+                        text=hover_texts, 
+                        hovertemplate="%{text}<extra></extra>", # Ekstra gereksiz kutuları gizler
+                        name=f'Kritik Merkezler (>{risk_esigi})'
+                    ))
                 
                 fig_map.update_layout(mapbox_style="carto-darkmatter", mapbox_center_lon=28.97, mapbox_center_lat=41.05, mapbox_zoom=9.5, margin={"r":0,"t":0,"l":0,"b":0})
                 st.plotly_chart(fig_map, use_container_width=True)
 
             # ==========================================
-            # TAB 2: TARİHSEL ANALİZ
+            # TAB 2 & 3: TARİHSEL VE GELECEK TAHMİNİ
             # ==========================================
             with tab2:
-                st.markdown("### 📊 Tarihsel Salgın Eğrisi")
-                st.info("Bu grafik, yüklediğiniz verilerdeki geçmiş ayların genel salgın eğilimini gösterir.")
-                
                 df_cases_valid = df_cases.dropna(subset=['Tarih']).copy()
                 df_cases_valid['Yıl_Ay'] = df_cases_valid['Tarih'].dt.strftime('%Y-%m') 
                 st.plotly_chart(px.line(df_cases_valid.groupby('Yıl_Ay').size().reset_index(name='Vaka Sayısı'), x='Yıl_Ay', y='Vaka Sayısı', markers=True, title="Tarihsel Eğri"), use_container_width=True)
 
-            # ==========================================
-            # TAB 3: HOLT-WINTERS GELECEK TAHMİNİ
-            # ==========================================
             with tab3:
-                st.markdown("### 📈 Holt-Winters ile Mevsimsel Gelecek Projeksiyonu")
-                st.markdown("Sistem, klasik epidemiyolojinin altın standardı olan Üstel Düzleştirme (Holt-Winters) modelini kullanarak geçmiş verilerinizdeki mevsimsel döngüleri öğrenir ve gelecek 6 ayın risk haritasını çıkarır.")
-                
-                if ExponentialSmoothing is None:
-                    st.error("🚨 **Statsmodels Kütüphanesi Eksik!** Lütfen terminalinizde `pip install statsmodels` komutunu çalıştırın veya requirements.txt dosyanıza ekleyin.")
-                else:
+                if ExponentialSmoothing:
                     try:
                         ts_df = df_cases_valid.groupby(pd.Grouper(key='Tarih', freq=FREQ_M)).size()
-                        idx = pd.date_range(ts_df.index.min(), latest_date, freq=FREQ_M)
-                        ts_df = ts_df.reindex(idx, fill_value=0)
+                        ts_df = ts_df.reindex(pd.date_range(ts_df.index.min(), latest_date, freq=FREQ_M), fill_value=0)
                         
-                        if len(ts_df) < 24: 
-                            st.warning("Holt-Winters algoritmasının salgının mevsimsel döngüsünü (yaz/kış farklarını) doğru öğrenebilmesi için sisteme en az 24 aylık geçmiş veri yüklemeniz tavsiye edilir.")
-                        
-                        with st.spinner("Holt-Winters Algoritması tarihsel döngüleri analiz ediyor..."):
-                            model = ExponentialSmoothing(
-                                ts_df, 
-                                trend='add', 
-                                seasonal='add', 
-                                seasonal_periods=12 if len(ts_df) >= 24 else None,
-                                initialization_method="estimated"
-                            ).fit()
-                            
-                            forecast = model.forecast(6)
-                            forecast = forecast.apply(lambda x: max(0, x)) 
-                            
-                            peak_date = forecast.idxmax()
-                            peak_value = int(forecast.max())
-                            ay_adi = aylar.get(peak_date.month, str(peak_date.month))
-                            yil = peak_date.year
-                            
-                            st.error(f"🚨 **ALGORİTMA ÖNGÖRÜSÜ:** Tarihsel trendler ve mevsimsel döngülere bakılırsa, önümüzdeki 6 ay içindeki en büyük risk **{ay_adi} {yil}** döneminde beklenmektedir. Bu ayda il genelinde tahmini vaka sayısının **{peak_value}** seviyelerine ulaşma potansiyeli vardır.")
-                            
+                        if len(ts_df) >= 12:
+                            model = ExponentialSmoothing(ts_df, trend='add', seasonal='add', seasonal_periods=12 if len(ts_df)>=24 else None, initialization_method="estimated").fit()
+                            forecast = model.forecast(6).apply(lambda x: max(0, x))
+                            st.error(f"🚨 ÖNGÖRÜ: Gelecek 6 ayın zirvesi **{aylar.get(forecast.idxmax().month)} {forecast.idxmax().year}** (Tahmini Vaka: {int(forecast.max())})")
                             fig_hw = go.Figure()
                             fig_hw.add_trace(go.Scatter(x=ts_df.index, y=ts_df.values, mode='lines+markers', name='Gerçekleşen Vakalar', line=dict(color='#1f77b4', width=2)))
                             fig_hw.add_trace(go.Scatter(x=forecast.index, y=forecast.values, mode='lines+markers', name='Holt-Winters YZ Tahmini', line=dict(color='#00ff00', width=3, dash='dot')))
-                            fig_hw.update_layout(title='Holt-Winters Algoritması ile 6 Aylık Epidemiyolojik Projeksiyon', xaxis_title='Zaman (Aylık)', yaxis_title='Vaka Sayısı', hovermode="x unified")
+                            fig_hw.update_layout(template="plotly_dark", hovermode="x unified")
                             st.plotly_chart(fig_hw, use_container_width=True)
-                            
-                    except Exception as e:
-                        st.error(f"Tahmin motorunda hata oluştu (Veriniz çok kısa veya düzensiz olabilir): {e}")
+                    except: pass
 
             # ==========================================
-            # TAB 4: BACKTESTING
+            # TAB 4: BACKTESTING 
             # ==========================================
             with tab4:
-                st.markdown("### 🧪 Model Doğrulama ve Kör Test (Backtesting)")
-                min_date = df_cases['Tarih'].min() + pd.DateOffset(months=6)
-                valid_months = pd.date_range(start=min_date, end=latest_date, freq=FREQ_M).strftime('%Y-%m').tolist()
-                test_month_str = st.selectbox("Sınamak İstediğiniz Gelecek Ayı Seçin:", valid_months[::-1])
+                valid_months = pd.date_range(start=df_cases['Tarih'].min() + pd.DateOffset(months=6), end=latest_date, freq=FREQ_M).strftime('%Y-%m').tolist()
+                test_month_str = st.selectbox("Sınamak İstediğiniz Ayı Seçin:", valid_months[::-1])
                 
                 if st.button("🚀 Kör Testi Başlat (Backtest)", type="primary"):
-                    with st.spinner("Zaman makinesi çalıştırılıyor..."):
-                        target_start = pd.to_datetime(test_month_str)
-                        target_end = target_start + pd.offsets.MonthEnd(1)
-                        context_end = target_start - pd.Timedelta(days=1)
-                        context_start = context_end - pd.DateOffset(months=6)
+                    target_start = pd.to_datetime(test_month_str)
+                    target_end = target_start + pd.offsets.MonthEnd(1)
+                    context_end = target_start - pd.Timedelta(days=1)
+                    context_start = context_end - pd.DateOffset(months=6)
+                    
+                    target_cases = df_cases[(df_cases['Tarih'] >= target_start) & (df_cases['Tarih'] <= target_end)].dropna(subset=['Lat', 'Lon']).copy()
+                    
+                    if len(target_cases) > 0:
+                        predicted_df = calculate_risk_scores(df_cases[(df_cases['Tarih'] >= context_start) & (df_cases['Tarih'] <= context_end)], df_pop.copy(), df_vax.copy(), df_geo.copy(), context_end, w_case, w_vuln)
                         
-                        context_cases = df_cases[(df_cases['Tarih'] >= context_start) & (df_cases['Tarih'] <= context_end)].copy()
-                        target_cases = df_cases[(df_cases['Tarih'] >= target_start) & (df_cases['Tarih'] <= target_end)].dropna(subset=['Lat', 'Lon']).copy()
+                        top_test_ahb = predicted_df[predicted_df['Risk_Skoru'] >= risk_esigi].dropna(subset=['Lat', 'Lon'])
                         
-                        if len(target_cases) == 0:
-                            st.warning("Gerçekleşmiş vaka kaydı yok.")
-                        else:
-                            # FONKSİYON YENİ AĞIRLIK PARAMETRELERİ İLE ÇAĞRILIYOR
-                            predicted_df = calculate_risk_scores(context_cases, df_pop.copy(), df_vax.copy(), df_geo.copy(), context_end, w_case, w_vuln)
+                        if not top_test_ahb.empty:
+                            top_lats, top_lons = top_test_ahb['Lat'].values, top_test_ahb['Lon'].values
+                            hits = sum(1 for _, r in target_cases.iterrows() if np.any(haversine_vectorized(r['Lat'], r['Lon'], top_lats, top_lons) <= 3.0))
                             
-                            top_test_ahb = predicted_df[predicted_df['Risk_Skoru'] >= risk_esigi].dropna(subset=['Lat', 'Lon'])
+                            st.success(f"✅ Risk Skoru {risk_esigi} Üzeri Olan Merkezlerle Yapılan Test Sonucu:")
+                            c1, c2, c3 = st.columns(3)
+                            c1.metric("Gerçekleşen Vaka", len(target_cases)); c2.metric("Radarımızın Yakaladığı", hits); c3.metric("İsabet Oranı", f"%{(hits/len(target_cases)*100):.1f}")
                             
-                            if top_test_ahb.empty:
-                                st.warning(f"Belirlediğiniz eşiği ({risk_esigi}) geçen merkez bulunamadı. Eşiği düşürerek tekrar test edebilirsiniz.")
-                            else:
-                                top_lats = top_test_ahb['Lat'].values
-                                top_lons = top_test_ahb['Lon'].values
-                                
-                                hits = 0
-                                hit_cases_lat, hit_cases_lon = [], []
-                                miss_cases_lat, miss_cases_lon = [], []
-                                
-                                for _, row in target_cases.iterrows():
-                                    dists = haversine_vectorized(row['Lat'], row['Lon'], top_lats, top_lons)
-                                    if np.any(dists <= 3.0): 
-                                        hits += 1
-                                        hit_cases_lat.append(row['Lat'])
-                                        hit_cases_lon.append(row['Lon'])
-                                    else:
-                                        miss_cases_lat.append(row['Lat'])
-                                        miss_cases_lon.append(row['Lon'])
-                                
-                                accuracy = (hits / len(target_cases)) * 100
-                                
-                                st.success(f"✅ Risk Skoru {risk_esigi} Üzeri Olan Merkezlerle Yapılan Test Sonucu:")
-                                col_a, col_b, col_c = st.columns(3)
-                                col_a.metric("Gerçekleşen Toplam Vaka", len(target_cases))
-                                col_b.metric("Radarımızın Yakaladığı Vaka", hits)
-                                col_c.metric("Modelin İsabet Oranı", f"%{accuracy:.1f}")
-                                
-                                st.markdown("#### 🗺️ Çarpışma Haritası (Tahminler vs Gerçekleşenler)")
-                                st.markdown("Açık Mavi: Modelin 1 ay önce çizdiği 3KM radar çemberleri. Yeşil Noktalar: Radarın yakaladığı vakalar. Kırmızı Noktalar: Radarın dışına düşen vakalar.")
-                                fig_test = go.Figure()
-                                hover_pred = top_test_ahb['Kurum Adı'] + "<br>Model Skoru: " + top_test_ahb['Risk_Skoru'].astype(str)
-                                
-                                fig_test.add_trace(go.Scattermapbox(lat=top_lats, lon=top_lons, mode='markers', marker=dict(size=25, color='rgba(0, 255, 255, 0.3)'), name='Tahmin Edilen 3KM Radar Alanları', hoverinfo='none'))
-                                fig_test.add_trace(go.Scattermapbox(lat=top_lats, lon=top_lons, mode='markers', marker=dict(size=8, color='cyan'), text=hover_pred, name='Tahmin Merkezleri', hoverinfo='text'))
-                                
-                                if hits > 0:
-                                    fig_test.add_trace(go.Scattermapbox(lat=hit_cases_lat, lon=hit_cases_lon, mode='markers', marker=dict(size=8, color='#00ff00'), name='Yakalanan Vakalar (Başarı)'))
-                                
-                                if len(miss_cases_lat) > 0:
-                                    fig_test.add_trace(go.Scattermapbox(lat=miss_cases_lat, lon=miss_cases_lon, mode='markers', marker=dict(size=8, color='#ff0000'), name='Kaçan Vakalar (Hata)'))
+                            fig_test = go.Figure()
+                            fig_test.add_trace(go.Scattermapbox(lat=top_lats, lon=top_lons, mode='markers', marker=dict(size=25, color='rgba(0, 255, 255, 0.3)'), hoverinfo='none', name='3KM Radar Alanı'))
+                            
+                            # TEST HARİTASI İÇİN DE ZENGİN BİLGİ KARTI
+                            hover_pred = (
+                                "<b>" + top_test_ahb['Kurum Adı'] + "</b><br>" +
+                                "📍 İlçe: " + top_test_ahb['İlçe'] + "<br>" +
+                                "🎯 Model Skoru: <b>" + top_test_ahb['Risk_Skoru'].astype(str) + "</b>"
+                            )
+                            
+                            fig_test.add_trace(go.Scattermapbox(
+                                lat=top_lats, 
+                                lon=top_lons, 
+                                mode='markers', 
+                                marker=dict(size=8, color='cyan'), 
+                                text=hover_pred, 
+                                hovertemplate="%{text}<extra></extra>",
+                                name='Tahmin Merkezleri'
+                            ))
+                            
+                            fig_test.add_trace(go.Scattermapbox(lat=[r['Lat'] for _, r in target_cases.iterrows() if np.any(haversine_vectorized(r['Lat'], r['Lon'], top_lats, top_lons) <= 3.0)], lon=[r['Lon'] for _, r in target_cases.iterrows() if np.any(haversine_vectorized(r['Lat'], r['Lon'], top_lats, top_lons) <= 3.0)], mode='markers', marker=dict(size=8, color='#00ff00'), name='Yakalanan Vakalar (Başarı)'))
+                            fig_test.add_trace(go.Scattermapbox(lat=[r['Lat'] for _, r in target_cases.iterrows() if not np.any(haversine_vectorized(r['Lat'], r['Lon'], top_lats, top_lons) <= 3.0)], lon=[r['Lon'] for _, r in target_cases.iterrows() if not np.any(haversine_vectorized(r['Lat'], r['Lon'], top_lats, top_lons) <= 3.0)], mode='markers', marker=dict(size=8, color='#ff0000'), name='Kaçan Vakalar (Hata)'))
                                                                        
-                                fig_test.update_layout(mapbox_style="carto-darkmatter", mapbox_center_lon=28.97, mapbox_center_lat=41.05, mapbox_zoom=9.5, margin={"r":0,"t":0,"l":0,"b":0}, legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
-                                st.plotly_chart(fig_test, use_container_width=True)
+                            fig_test.update_layout(mapbox_style="carto-darkmatter", mapbox_center_lon=28.97, mapbox_center_lat=41.05, mapbox_zoom=9.5, margin={"r":0,"t":0,"l":0,"b":0}, legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
+                            st.plotly_chart(fig_test, use_container_width=True)
 
         except Exception as e:
             st.error(f"Hata oluştu: {e}")
