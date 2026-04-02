@@ -30,8 +30,8 @@ except ValueError:
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V9.8: Akıllı Harita & Zengin Bilgi)")
-st.markdown("Nüfus ve Koordinat altyapıları sisteme gömülmüştür. Haritadaki noktaların üzerine gelerek detaylı bilgi kartlarını inceleyebilirsiniz.")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V9.9: Kesin Bilgi Kartı Çözümü)")
+st.markdown("Nüfus ve Koordinat altyapıları sisteme gömülmüştür. Formül ağırlıklarını değiştirerek **Filyasyon (Akut)** veya **Aşılama (Koruyucu)** odaklı stratejiler kurabilirsiniz.")
 
 # --- 1. YÜKLEME VE AYAR MODÜLÜ (SIDEBAR) ---
 st.sidebar.header("📂 Aylık Dinamik Veri Yükleme")
@@ -60,6 +60,7 @@ def tr_upper(text):
     return str(text).replace('i', 'İ').replace('ı', 'I').replace('i̇', 'İ').upper().strip()
 
 def clean_tr_chars(text):
+    """PDF içindeki olası font hatalarını önlemek için Türkçe karakterleri standart Latin harflerine çevirir."""
     tr_map = {'ç':'c', 'ğ':'g', 'ı':'i', 'ö':'o', 'ş':'s', 'ü':'u', 'Ç':'C', 'Ğ':'G', 'İ':'I', 'Ö':'O', 'Ş':'S', 'Ü':'U'}
     res = str(text)
     for k, v in tr_map.items(): 
@@ -226,10 +227,20 @@ if file_cases and file_vax:
                 if not recent_cases_geo.empty:
                     recent_cases_geo['Gun_Farki'] = (latest_date - recent_cases_geo['Tarih']).dt.days
                     recent_cases_geo['Vaka_Agirligi'] = 0.5 ** (recent_cases_geo['Gun_Farki'].apply(lambda x: max(0, x)) / 30.0)
-                    fig_map.add_trace(go.Densitymapbox(lat=recent_cases_geo['Lat'], lon=recent_cases_geo['Lon'], z=recent_cases_geo['Vaka_Agirligi'], radius=12, colorscale='Inferno', opacity=0.7, name="Taze Vaka Yoğunluğu"))
+                    # HATA ÇÖZÜMÜ BURADA: hoverinfo='skip' eklendi!
+                    fig_map.add_trace(go.Densitymapbox(
+                        lat=recent_cases_geo['Lat'], 
+                        lon=recent_cases_geo['Lon'], 
+                        z=recent_cases_geo['Vaka_Agirligi'], 
+                        radius=12, 
+                        colorscale='Inferno', 
+                        opacity=0.7, 
+                        name="Taze Vaka Yoğunluğu",
+                        hoverinfo='skip' 
+                    ))
                 
                 if not top_ahb_geo.empty:
-                    # YENİ EKLENEN HTML ZENGİN BİLGİ KARTI (HOVER)
+                    # KESİN TEXT DÖNÜŞÜMÜ (TOLIST EKLENDİ)
                     hover_texts = (
                         "<b>" + top_ahb_geo['Kurum Adı'] + "</b><br><br>" +
                         "📍 İlçe: " + top_ahb_geo['İlçe'] + "<br>" +
@@ -237,7 +248,7 @@ if file_cases and file_vax:
                         "🔥 Vaka Yükü: " + top_ahb_geo['Cember_Vaka_Yuk'].astype(str) + "<br>" +
                         "🛡️ Korunmasız Çocuk: " + top_ahb_geo['Korunmasız_Cocuk'].astype(str) + "<br>" +
                         "💉 Aşı Hızı: %" + top_ahb_geo['Toplam Aşılama Hızı'].astype(str)
-                    )
+                    ).tolist()
                     
                     fig_map.add_trace(go.Scattermapbox(
                         lat=top_ahb_geo['Lat'], 
@@ -245,7 +256,7 @@ if file_cases and file_vax:
                         mode='markers', 
                         marker=dict(size=14, color='cyan', opacity=0.9), 
                         text=hover_texts, 
-                        hovertemplate="%{text}<extra></extra>", # Ekstra gereksiz kutuları gizler
+                        hovertemplate="%{text}<extra></extra>",
                         name=f'Kritik Merkezler (>{risk_esigi})'
                     ))
                 
@@ -306,14 +317,22 @@ if file_cases and file_vax:
                             c1.metric("Gerçekleşen Vaka", len(target_cases)); c2.metric("Radarımızın Yakaladığı", hits); c3.metric("İsabet Oranı", f"%{(hits/len(target_cases)*100):.1f}")
                             
                             fig_test = go.Figure()
-                            fig_test.add_trace(go.Scattermapbox(lat=top_lats, lon=top_lons, mode='markers', marker=dict(size=25, color='rgba(0, 255, 255, 0.3)'), hoverinfo='none', name='3KM Radar Alanı'))
+                            # HATA ÇÖZÜMÜ BURADA: Arka plan radar çemberlerine hoverinfo='skip' eklendi!
+                            fig_test.add_trace(go.Scattermapbox(
+                                lat=top_lats, 
+                                lon=top_lons, 
+                                mode='markers', 
+                                marker=dict(size=25, color='rgba(0, 255, 255, 0.3)'), 
+                                hoverinfo='skip', 
+                                name='3KM Radar Alanı'
+                            ))
                             
-                            # TEST HARİTASI İÇİN DE ZENGİN BİLGİ KARTI
+                            # KESİN TEXT DÖNÜŞÜMÜ (TOLIST EKLENDİ)
                             hover_pred = (
                                 "<b>" + top_test_ahb['Kurum Adı'] + "</b><br>" +
                                 "📍 İlçe: " + top_test_ahb['İlçe'] + "<br>" +
                                 "🎯 Model Skoru: <b>" + top_test_ahb['Risk_Skoru'].astype(str) + "</b>"
-                            )
+                            ).tolist()
                             
                             fig_test.add_trace(go.Scattermapbox(
                                 lat=top_lats, 
