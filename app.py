@@ -161,7 +161,9 @@ if file_cases and file_vax:
             df_cases = pd.read_csv(file_cases) if file_cases.name.endswith('.csv') else pd.read_excel(file_cases)
             df_vax = pd.read_csv(file_vax) if file_vax.name.endswith('.csv') else pd.read_excel(file_vax)
 
+            # KOORDİNAT OKUMA GÜNCELLENDİ (YENİ DOSYA İSMİ DESTEĞİ)
             if os.path.exists('ahb_geocoded.csv'): df_geo = pd.read_csv('ahb_geocoded.csv')
+            elif os.path.exists('ahb_geocoded.xlsx - Geocoded.csv'): df_geo = pd.read_csv('ahb_geocoded.xlsx - Geocoded.csv')
             elif os.path.exists('ahb_geocoded.xlsx'): df_geo = pd.read_excel('ahb_geocoded.xlsx')
             else: st.error("🚨 KRİTİK HATA: Koordinat dosyası bulunamadı!"); st.stop()
 
@@ -261,7 +263,7 @@ if file_cases and file_vax:
                 st.plotly_chart(fig_map, use_container_width=True)
 
             # ==========================================
-            # TAB 2: TARİHSEL ANALİZ VE R_t MODÜLÜ (YENİ EKLENDİ)
+            # TAB 2: TARİHSEL ANALİZ VE R_t MODÜLÜ 
             # ==========================================
             with tab2:
                 st.markdown("### 📊 Tarihsel Salgın Eğrisi")
@@ -278,17 +280,14 @@ if file_cases and file_vax:
                 st.markdown("Bir vakanın ortalama kaç kişiye hastalığı bulaştırdığına dair epidemiyolojik bir proxy (yaklaşım) metrik sunar. **$R_t > 1$** salgının ivmelendiğini, **$R_t < 1$** ise filyasyonun işe yaradığını ve salgının sönümlendiğini ifade eder.")
                 
                 if len(epi_data) > 1:
-                    # Bir önceki ayın vakalarına bölerek R_t tahmini üret (Sıfıra bölünme hatasını engellemek için +0.01 pay eklendi)
                     epi_data['Rt'] = (epi_data['Vaka Sayısı'] / (epi_data['Vaka Sayısı'].shift(1) + 0.01)).round(2)
-                    epi_data['Rt'] = epi_data['Rt'].fillna(0) # İlk ay için NaN temizliği
+                    epi_data['Rt'] = epi_data['Rt'].fillna(0) 
                     
                     fig_rt = go.Figure()
-                    
-                    # R_t Değerine Göre Dinamik Renk Kodlaması (1'den büyükse Kırmızı, küçükse Yeşil)
                     colors = ['#ff4b4b' if val > 1.0 else '#00ff00' for val in epi_data['Rt']]
                     
                     fig_rt.add_trace(go.Scatter(
-                        x=epi_data['Yıl_Ay'][1:], # İlk ayı atla (kıyas verisi yok)
+                        x=epi_data['Yıl_Ay'][1:], 
                         y=epi_data['Rt'][1:],
                         mode='lines+markers',
                         name='Rt Değeri',
@@ -296,7 +295,6 @@ if file_cases and file_vax:
                         marker=dict(color=colors[1:], size=10, symbol='circle', line=dict(color='white', width=1))
                     ))
                     
-                    # R_t = 1 Kritik Eşik Çizgisi
                     fig_rt.add_hline(y=1.0, line_dash="dash", line_color="white", annotation_text="Kritik Eşik ($R_t=1$)", annotation_position="bottom right")
                     
                     fig_rt.update_layout(
