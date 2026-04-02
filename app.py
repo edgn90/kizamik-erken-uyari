@@ -30,8 +30,8 @@ except ValueError:
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V9.9: Kesin Bilgi Kartı Çözümü)")
-st.markdown("Nüfus ve Koordinat altyapıları sisteme gömülmüştür. Formül ağırlıklarını değiştirerek **Filyasyon (Akut)** veya **Aşılama (Koruyucu)** odaklı stratejiler kurabilirsiniz.")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V10.0: Ultimate Sürüm)")
+st.markdown("Nüfus ve Koordinat altyapıları sisteme gömülmüştür. $R_t$ takibi, dinamik ağırlıklar ve yapay zeka destekli erken uyarı ile tam teşekküllü komuta merkezi.")
 
 # --- 1. YÜKLEME VE AYAR MODÜLÜ (SIDEBAR) ---
 st.sidebar.header("📂 Aylık Dinamik Veri Yükleme")
@@ -60,7 +60,6 @@ def tr_upper(text):
     return str(text).replace('i', 'İ').replace('ı', 'I').replace('i̇', 'İ').upper().strip()
 
 def clean_tr_chars(text):
-    """PDF içindeki olası font hatalarını önlemek için Türkçe karakterleri standart Latin harflerine çevirir."""
     tr_map = {'ç':'c', 'ğ':'g', 'ı':'i', 'ö':'o', 'ş':'s', 'ü':'u', 'Ç':'C', 'Ğ':'G', 'İ':'I', 'Ö':'O', 'Ş':'S', 'Ü':'U'}
     res = str(text)
     for k, v in tr_map.items(): 
@@ -178,7 +177,7 @@ if file_cases and file_vax:
 
             tab1, tab2, tab3, tab4 = st.tabs([
                 "🎯 YZ ERKEN UYARI", 
-                "📊 TARİHSEL ANALİZ", 
+                "📊 TARİHSEL ANALİZ & $R_t$", 
                 "📈 HOLT-WINTERS GELECEK TAHMİNİ", 
                 "🧪 BACKTESTING (Model Sınama)"
             ])
@@ -227,7 +226,6 @@ if file_cases and file_vax:
                 if not recent_cases_geo.empty:
                     recent_cases_geo['Gun_Farki'] = (latest_date - recent_cases_geo['Tarih']).dt.days
                     recent_cases_geo['Vaka_Agirligi'] = 0.5 ** (recent_cases_geo['Gun_Farki'].apply(lambda x: max(0, x)) / 30.0)
-                    # HATA ÇÖZÜMÜ BURADA: hoverinfo='skip' eklendi!
                     fig_map.add_trace(go.Densitymapbox(
                         lat=recent_cases_geo['Lat'], 
                         lon=recent_cases_geo['Lon'], 
@@ -240,7 +238,6 @@ if file_cases and file_vax:
                     ))
                 
                 if not top_ahb_geo.empty:
-                    # KESİN TEXT DÖNÜŞÜMÜ (TOLIST EKLENDİ)
                     hover_texts = (
                         "<b>" + top_ahb_geo['Kurum Adı'] + "</b><br><br>" +
                         "📍 İlçe: " + top_ahb_geo['İlçe'] + "<br>" +
@@ -264,13 +261,58 @@ if file_cases and file_vax:
                 st.plotly_chart(fig_map, use_container_width=True)
 
             # ==========================================
-            # TAB 2 & 3: TARİHSEL VE GELECEK TAHMİNİ
+            # TAB 2: TARİHSEL ANALİZ VE R_t MODÜLÜ (YENİ EKLENDİ)
             # ==========================================
             with tab2:
+                st.markdown("### 📊 Tarihsel Salgın Eğrisi")
+                st.info("Bu grafik, yüklediğiniz verilerdeki geçmiş ayların genel salgın eğilimini gösterir.")
+                
                 df_cases_valid = df_cases.dropna(subset=['Tarih']).copy()
                 df_cases_valid['Yıl_Ay'] = df_cases_valid['Tarih'].dt.strftime('%Y-%m') 
-                st.plotly_chart(px.line(df_cases_valid.groupby('Yıl_Ay').size().reset_index(name='Vaka Sayısı'), x='Yıl_Ay', y='Vaka Sayısı', markers=True, title="Tarihsel Eğri"), use_container_width=True)
+                epi_data = df_cases_valid.groupby('Yıl_Ay').size().reset_index(name='Vaka Sayısı')
+                st.plotly_chart(px.line(epi_data, x='Yıl_Ay', y='Vaka Sayısı', markers=True, title="Tarihsel Vaka Gelişimi"), use_container_width=True)
+                
+                # R_t (EFEKTİF ÜREME KATSAYISI) CANLI TAKİP MOTORU
+                st.markdown("---")
+                st.markdown("### 🧬 $R_t$ (Efektif Üreme Katsayısı) Canlı Takip Modülü")
+                st.markdown("Bir vakanın ortalama kaç kişiye hastalığı bulaştırdığına dair epidemiyolojik bir proxy (yaklaşım) metrik sunar. **$R_t > 1$** salgının ivmelendiğini, **$R_t < 1$** ise filyasyonun işe yaradığını ve salgının sönümlendiğini ifade eder.")
+                
+                if len(epi_data) > 1:
+                    # Bir önceki ayın vakalarına bölerek R_t tahmini üret (Sıfıra bölünme hatasını engellemek için +0.01 pay eklendi)
+                    epi_data['Rt'] = (epi_data['Vaka Sayısı'] / (epi_data['Vaka Sayısı'].shift(1) + 0.01)).round(2)
+                    epi_data['Rt'] = epi_data['Rt'].fillna(0) # İlk ay için NaN temizliği
+                    
+                    fig_rt = go.Figure()
+                    
+                    # R_t Değerine Göre Dinamik Renk Kodlaması (1'den büyükse Kırmızı, küçükse Yeşil)
+                    colors = ['#ff4b4b' if val > 1.0 else '#00ff00' for val in epi_data['Rt']]
+                    
+                    fig_rt.add_trace(go.Scatter(
+                        x=epi_data['Yıl_Ay'][1:], # İlk ayı atla (kıyas verisi yok)
+                        y=epi_data['Rt'][1:],
+                        mode='lines+markers',
+                        name='Rt Değeri',
+                        line=dict(color='gray', width=2),
+                        marker=dict(color=colors[1:], size=10, symbol='circle', line=dict(color='white', width=1))
+                    ))
+                    
+                    # R_t = 1 Kritik Eşik Çizgisi
+                    fig_rt.add_hline(y=1.0, line_dash="dash", line_color="white", annotation_text="Kritik Eşik ($R_t=1$)", annotation_position="bottom right")
+                    
+                    fig_rt.update_layout(
+                        title='Aylık Efektif Üreme Katsayısı ($R_t$) Dalgalanması',
+                        xaxis_title='Zaman (Aylık)',
+                        yaxis_title='Rt Değeri',
+                        hovermode="x unified",
+                        template="plotly_dark"
+                    )
+                    st.plotly_chart(fig_rt, use_container_width=True)
+                else:
+                    st.warning("Rt hesaplaması yapabilmek için sisteme en az 2 aylık geçmiş vaka verisi yüklenmesi gerekmektedir.")
 
+            # ==========================================
+            # TAB 3: HOLT-WINTERS GELECEK TAHMİNİ
+            # ==========================================
             with tab3:
                 if ExponentialSmoothing:
                     try:
@@ -317,7 +359,6 @@ if file_cases and file_vax:
                             c1.metric("Gerçekleşen Vaka", len(target_cases)); c2.metric("Radarımızın Yakaladığı", hits); c3.metric("İsabet Oranı", f"%{(hits/len(target_cases)*100):.1f}")
                             
                             fig_test = go.Figure()
-                            # HATA ÇÖZÜMÜ BURADA: Arka plan radar çemberlerine hoverinfo='skip' eklendi!
                             fig_test.add_trace(go.Scattermapbox(
                                 lat=top_lats, 
                                 lon=top_lons, 
@@ -327,7 +368,6 @@ if file_cases and file_vax:
                                 name='3KM Radar Alanı'
                             ))
                             
-                            # KESİN TEXT DÖNÜŞÜMÜ (TOLIST EKLENDİ)
                             hover_pred = (
                                 "<b>" + top_test_ahb['Kurum Adı'] + "</b><br>" +
                                 "📍 İlçe: " + top_test_ahb['İlçe'] + "<br>" +
