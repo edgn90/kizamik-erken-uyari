@@ -30,14 +30,16 @@ except ValueError:
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V10.3: Rehberli Sürüm)")
-st.markdown("Nüfus/Koordinat altyapıları gömülüdür. Sistem artık hem **Doğal Bağışıklığı** hem de **Geçmiş Yılların Aşı Boşluklarını (Kümülatif Havuz)** otonom olarak hesaplamaktadır.")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V10.4: Çoklu Kohort Motoru)")
+st.markdown("Nüfus/Koordinat altyapıları gömülüdür. Sistem geçmiş yıllara ait ayrı aşı dosyalarını aynı anda okuyarak **Kümülatif Aşı Boşluğunu** otonom birleştirir.")
 
 # --- 1. YÜKLEME VE AYAR MODÜLÜ (SIDEBAR) ---
 st.sidebar.header("📂 Aylık Dinamik Veri Yükleme")
 file_cases = st.sidebar.file_uploader("1. Vaka Listesi (Kızamık.xlsx/csv)", type=["csv", "xlsx"])
-file_vax = st.sidebar.file_uploader("2. Aşı Performansı (KKK.xlsx/csv)", type=["csv", "xlsx"])
-st.sidebar.info("💡 **İpucu:** Aşı dosyanıza '2022', '2023', '2024' gibi geçmiş yılların sütunlarını eklerseniz, sistem birikmiş kümülatif riski otomatik hesaplar.")
+
+# ÇOKLU DOSYA DESTEĞİ EKLENDİ (accept_multiple_files=True)
+file_vax = st.sidebar.file_uploader("2. Aşı Performansı (Geçmiş Yılları Çoklu Seçebilirsiniz)", type=["csv", "xlsx"], accept_multiple_files=True)
+st.sidebar.info("💡 **İpucu:** 2022, 2023, 2024 gibi birden fazla aşı dosyasını sürükleyip aynı anda bırakırsanız, sistem hepsini otomatik birleştirip Kümülatif (Birikmiş) risk havuzunu hesaplar.")
 
 st.sidebar.markdown("---")
 st.sidebar.header("🎛️ Radar Ayarları")
@@ -61,7 +63,6 @@ def tr_upper(text):
     return str(text).replace('i', 'İ').replace('ı', 'I').replace('i̇', 'İ').upper().strip()
 
 def clean_tr_chars(text):
-    """PDF içindeki olası font hatalarını önlemek için Türkçe karakterleri standart Latin harflerine çevirir."""
     tr_map = {'ç':'c', 'ğ':'g', 'ı':'i', 'ö':'o', 'ş':'s', 'ü':'u', 'Ç':'C', 'Ğ':'G', 'İ':'I', 'Ö':'O', 'Ş':'S', 'Ü':'U'}
     res = str(text)
     for k, v in tr_map.items(): 
@@ -82,7 +83,6 @@ def extract_ahb_no(text):
 
 # --- GÜNCELLENMİŞ RİSK MOTORU (Kümülatif Kohort & SEIR) ---
 def calculate_risk_scores(all_cases, df_pop, df_vax, df_geo, target_date, weight_case, weight_vuln):
-    # Zaman Filtreleri (Aktif Yangın vs Geçmiş Bağışıklık)
     recent_cases = all_cases[(all_cases['Tarih'] > target_date - pd.DateOffset(months=6)) & (all_cases['Tarih'] <= target_date)].copy()
     historical_cases = all_cases[all_cases['Tarih'] <= target_date - pd.DateOffset(months=6)].copy()
 
@@ -94,6 +94,7 @@ def calculate_risk_scores(all_cases, df_pop, df_vax, df_geo, target_date, weight
     if len(hist_vax_cols) > 0:
         for col in hist_vax_cols:
             df_vax[col] = pd.to_numeric(df_vax[col], errors='coerce')
+        # Sadece sayısal (NaN olmayan) yılları ortalayarak Kümülatif Aşı Hızını bul
         df_vax['Kumulatif_Asi_Hizi'] = df_vax[hist_vax_cols].mean(axis=1)
     else:
         df_vax['Kumulatif_Asi_Hizi'] = df_vax['Toplam Aşılama Hızı']
@@ -194,17 +195,57 @@ def create_pdf_report(dataframe, target_month_str):
 
 # --- ANA İŞLEYİŞ ---
 if file_cases and file_vax:
-    with st.spinner('Sistem Başlatılıyor ve Gömülü Altyapı Verileri Okunuyor...'):
+    with st.spinner('Sistem Başlatılıyor ve Kohort Verileri Okunuyor...'):
         try:
+            # 1. VAKA DOSYASI OKUMA
             df_cases = pd.read_csv(file_cases) if file_cases.name.endswith('.csv') else pd.read_excel(file_cases)
-            df_vax = pd.read_csv(file_vax) if file_vax.name.endswith('.csv') else pd.read_excel(file_vax)
 
-            # KOORDİNAT OKUMA (Tüm Varyasyonlar Destekli)
+            # 2. ÇOKLU AŞI DOSYASI OKUMA VE BİRLEŞTİRME (V10.4 YENİLİĞİ)
+            all_vax_frames = []
+            detected_years = []
+            
+            # Eğer tek dosya seçildiyse de listeye çevir
+            if not isinstance(file_vax, list): file_vax = [file_vax]
+                
+            for v_file in file_vax:
+                t = pd.read_csv(v_file) if v_file.name.endswith('.csv') else pd.read_excel(v_file)
+                # Dosya isminden yılı bul (Örn: "...2022 KKK.csv" -> "2022")
+                year_match = re.search(r'(20[1-2][0-9])', v_file.name)
+                col_name = year_match.group(1) if year_match else 'Toplam Aşılama Hızı'
+                
+                if year_match and col_name not in detected_years:
+                    detected_years.append(col_name)
+                
+                if 'Toplam Aşılama Hızı' in t.columns:
+                    t = t[['İlçe', 'Kurum Adı', 'Toplam Aşılama Hızı']].copy()
+                    t.rename(columns={'Toplam Aşılama Hızı': col_name}, inplace=True)
+                    t['İlçe_Eslenik'] = t['İlçe'].apply(tr_upper)
+                    t['AHB_No'] = t['Kurum Adı'].apply(extract_ahb_no)
+                    t = t.groupby(['İlçe_Eslenik', 'AHB_No']).first().reset_index()
+                    all_vax_frames.append(t)
+            
+            if not all_vax_frames:
+                st.error("🚨 HATA: Aşı dosyaları okunamadı veya uygun formatta değil!")
+                st.stop()
+                
+            # Tüm aşı yıllarını tek bir veri setinde birleştir (Outer Join)
+            df_vax = all_vax_frames[0]
+            for df in all_vax_frames[1:]:
+                cols_to_use = ['İlçe_Eslenik', 'AHB_No'] + [c for c in df.columns if c not in df_vax.columns]
+                df_vax = pd.merge(df_vax, df[cols_to_use], on=['İlçe_Eslenik', 'AHB_No'], how='outer')
+            
+            # Eğer "Toplam Aşılama Hızı" (Güncel Hız) adında bir sütun yoksa, tespit edilen en son yılı güncel hız kabul et
+            year_cols = sorted([c for c in df_vax.columns if re.match(r'^20\d{2}$', str(c))])
+            if 'Toplam Aşılama Hızı' not in df_vax.columns and len(year_cols) > 0:
+                df_vax['Toplam Aşılama Hızı'] = df_vax[year_cols[-1]]
+
+            # KOORDİNAT OKUMA
             if os.path.exists('ahb_geocoded.csv'): df_geo = pd.read_csv('ahb_geocoded.csv')
             elif os.path.exists('ahb_geocoded.xlsx - Geocoded.csv'): df_geo = pd.read_csv('ahb_geocoded.xlsx - Geocoded.csv')
             elif os.path.exists('ahb_geocoded.xlsx'): df_geo = pd.read_excel('ahb_geocoded.xlsx')
             else: st.error("🚨 KRİTİK HATA: Koordinat dosyası bulunamadı!"); st.stop()
 
+            # NÜFUS OKUMA
             if os.path.exists('nufus_verisi.csv'): df_pop = pd.read_csv('nufus_verisi.csv')
             elif os.path.exists('nufus_verisi.xlsx'): df_pop = pd.read_excel('nufus_verisi.xlsx')
             else: st.error("🚨 KRİTİK HATA: Nüfus dosyası bulunamadı!"); st.stop()
@@ -215,7 +256,6 @@ if file_cases and file_vax:
                 df_cases['Lat'] = pd.to_numeric(df_cases['Lat'], errors='coerce')
                 df_cases['Lon'] = pd.to_numeric(df_cases['Lon'], errors='coerce')
 
-            # 5. SEKME EKLENDİ
             tab1, tab2, tab3, tab4, tab5 = st.tabs([
                 "🎯 YZ ERKEN UYARI", 
                 "📊 TARİHSEL ANALİZ & $R_t$", 
@@ -231,6 +271,10 @@ if file_cases and file_vax:
             # TAB 1: YZ ERKEN UYARI
             # ==========================================
             with tab1:
+                # Kohort Bilgilendirmesi
+                if len(detected_years) > 1:
+                    st.success(f"🧬 **Kohort Motoru Aktif:** {', '.join(sorted(detected_years))} yıllarına ait dosyalar otonom olarak birleştirildi ve Kümülatif Aşı hafızası oluşturuldu.")
+
                 df_final = calculate_risk_scores(df_cases.copy(), df_pop.copy(), df_vax.copy(), df_geo.copy(), latest_date, w_case, w_vuln)
                 
                 top_ahb_df = df_final[df_final['Risk_Skoru'] >= risk_esigi].copy()
@@ -406,7 +450,7 @@ if file_cases and file_vax:
                             st.plotly_chart(fig_test, use_container_width=True)
 
             # ==========================================
-            # TAB 5: RİSK HESAPLAMA REHBERİ (YENİ EKLENDİ)
+            # TAB 5: RİSK HESAPLAMA REHBERİ
             # ==========================================
             with tab5:
                 st.header("🧠 Sistem Algoritması ve Risk Hesaplama Metodolojisi")
@@ -414,7 +458,7 @@ if file_cases and file_vax:
                 Bu sekme, **Kızamık YZ Sürveyans Radarı**'nın arka planda çalıştırdığı epidemiyolojik ve matematiksel modellerin şeffaf bir özetini sunar. Hedef, veri odaklı karar verme süreçlerinizi desteklemektir.
 
                 ### 1. Kümülatif Kırılganlık ve Bağışıklık Boşluğu (Immunity Gap)
-                Sistem, risk analizi yaparken sadece mevcut yılın aşı oranlarına bağlı kalmaz. Yüklenen Aşı (KKK) veri setinde geçmiş yıllar (Örn: 2022, 2023, 2024) yer alıyorsa, sistem bu yılları tarayarak birimlerin **Kümülatif Aşı Hızını** (yılların ortalamasını) hesaplar.
+                Sistem, risk analizi yaparken sadece mevcut yılın aşı oranlarına bağlı kalmaz. 2. Modülden yüklediğiniz **çoklu aşı dosyalarını (Örn: 2022, 2023, 2024...)** otonom olarak birleştirir ve **Kümülatif Aşı Hızını** (yılların ortalamasını) hesaplar.
                 * **Ham Kırılgan Nüfus** = Hedef Nüfus × (100 - Kümülatif Aşı Hızı) / 100
                 * *Amaç:* Kağıt üzerinde bu yıl iyi görünen ancak önceki yıllarda eksik aşılı kalıp biriken tehlikeli çocuk havuzunu yakalamak.
 
