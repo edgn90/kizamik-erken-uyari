@@ -30,13 +30,14 @@ except ValueError:
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V10.1: Doğal Bağışıklık Motoru)")
-st.markdown("Nüfus ve Koordinat altyapıları sisteme gömülmüştür. Sistem artık geçmiş vakalardan elde edilen **Doğal Bağışıklığı (Kazanılmış İmmünite)** hesaplayarak risk skorunu bilimsel olarak optimize eder.")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V10.2: Kümülatif Kohort Motoru)")
+st.markdown("Nüfus/Koordinat altyapıları gömülüdür. Sistem artık hem **Doğal Bağışıklığı** hem de **Geçmiş Yılların Aşı Boşluklarını (Kümülatif Havuz)** otonom olarak hesaplamaktadır.")
 
 # --- 1. YÜKLEME VE AYAR MODÜLÜ (SIDEBAR) ---
 st.sidebar.header("📂 Aylık Dinamik Veri Yükleme")
 file_cases = st.sidebar.file_uploader("1. Vaka Listesi (Kızamık.xlsx/csv)", type=["csv", "xlsx"])
 file_vax = st.sidebar.file_uploader("2. Aşı Performansı (KKK.xlsx/csv)", type=["csv", "xlsx"])
+st.sidebar.info("💡 **İpucu:** Aşı dosyanıza '2022', '2023', '2024' gibi geçmiş yılların sütunlarını eklerseniz, sistem birikmiş kümülatif riski otomatik hesaplar.")
 
 st.sidebar.markdown("---")
 st.sidebar.header("🎛️ Radar Ayarları")
@@ -60,6 +61,7 @@ def tr_upper(text):
     return str(text).replace('i', 'İ').replace('ı', 'I').replace('i̇', 'İ').upper().strip()
 
 def clean_tr_chars(text):
+    """PDF içindeki olası font hatalarını önlemek için Türkçe karakterleri standart Latin harflerine çevirir."""
     tr_map = {'ç':'c', 'ğ':'g', 'ı':'i', 'ö':'o', 'ş':'s', 'ü':'u', 'Ç':'C', 'Ğ':'G', 'İ':'I', 'Ö':'O', 'Ş':'S', 'Ü':'U'}
     res = str(text)
     for k, v in tr_map.items(): 
@@ -78,7 +80,7 @@ def extract_ahb_no(text):
     nums = re.findall(r'\d+', str(text))
     return str(int(nums[0])) if nums else "0" 
 
-# --- GÜNCELLENMİŞ DOĞAL BAĞIŞIKLIK (SEIR) MOTORU ---
+# --- GÜNCELLENMİŞ RİSK MOTORU (Kümülatif Kohort & SEIR) ---
 def calculate_risk_scores(all_cases, df_pop, df_vax, df_geo, target_date, weight_case, weight_vuln):
     # Zaman Filtreleri (Aktif Yangın vs Geçmiş Bağışıklık)
     recent_cases = all_cases[(all_cases['Tarih'] > target_date - pd.DateOffset(months=6)) & (all_cases['Tarih'] <= target_date)].copy()
@@ -87,12 +89,21 @@ def calculate_risk_scores(all_cases, df_pop, df_vax, df_geo, target_date, weight
     df_pop['Target_Pop'] = pd.to_numeric(df_pop['Bebek Sayısı'], errors='coerce').fillna(0) + pd.to_numeric(df_pop['Çocuk Sayısı'], errors='coerce').fillna(0)
     df_vax['Toplam Aşılama Hızı'] = pd.to_numeric(df_vax['Toplam Aşılama Hızı'], errors='coerce')
     
+    # 0. KÜMÜLATİF KOHORT TARAYICISI
+    hist_vax_cols = [col for col in df_vax.columns if re.search(r'20[1-2][0-9]', str(col))]
+    if len(hist_vax_cols) > 0:
+        for col in hist_vax_cols:
+            df_vax[col] = pd.to_numeric(df_vax[col], errors='coerce')
+        df_vax['Kumulatif_Asi_Hizi'] = df_vax[hist_vax_cols].mean(axis=1)
+    else:
+        df_vax['Kumulatif_Asi_Hizi'] = df_vax['Toplam Aşılama Hızı']
+    
     df_pop['İlçe_Eslenik'] = df_pop['İlçe'].apply(tr_upper)
     df_pop['AHB_No'] = df_pop['Kurum Adı'].apply(extract_ahb_no)
     df_vax['İlçe_Eslenik'] = df_vax['İlçe'].apply(tr_upper)
     df_vax['AHB_No'] = df_vax['Kurum Adı'].apply(extract_ahb_no)
     
-    df_merged = pd.merge(df_pop[['İlçe_Eslenik', 'AHB_No', 'İlçe', 'Kurum Adı', 'Target_Pop']], df_vax[['İlçe_Eslenik', 'AHB_No', 'Toplam Aşılama Hızı']], on=['İlçe_Eslenik', 'AHB_No'], how='inner')
+    df_merged = pd.merge(df_pop[['İlçe_Eslenik', 'AHB_No', 'İlçe', 'Kurum Adı', 'Target_Pop']], df_vax[['İlçe_Eslenik', 'AHB_No', 'Toplam Aşılama Hızı', 'Kumulatif_Asi_Hizi']], on=['İlçe_Eslenik', 'AHB_No'], how='inner')
     
     col_name = 'Birim Adı' if 'Birim Adı' in df_geo.columns else 'Kurum Adı'
     df_geo['İlçe_Eslenik'] = df_geo['İlçe'].apply(tr_upper) if 'İlçe' in df_geo.columns else "BİLİNMİYOR"
@@ -102,11 +113,11 @@ def calculate_risk_scores(all_cases, df_pop, df_vax, df_geo, target_date, weight
     df_clean = pd.merge(df_merged, df_geo_unique[['İlçe_Eslenik', 'AHB_No', 'Lat', 'Lon']], on=['İlçe_Eslenik', 'AHB_No'], how='left')
     df_clean = df_clean[(df_clean['İlçe'].notna()) & (df_clean['İlçe'] != 'TUM') & (df_clean['İlçe'] != 'NAN')].copy()
     
-    # 1. HAM KIRILGANLIK HESABI
-    df_clean['Unvax_Rate'] = 100 - df_clean['Toplam Aşılama Hızı']
+    # 1. HAM KIRILGANLIK HESABI (KÜMÜLATİF HIZ ÜZERİNDEN)
+    df_clean['Unvax_Rate'] = 100 - df_clean['Kumulatif_Asi_Hizi']
     df_clean['Korunmasız_Ham'] = (df_clean['Target_Pop'] * df_clean['Unvax_Rate'] / 100).fillna(0).astype(int)
 
-    # 2. DOĞAL BAĞIŞIKLIK HESABI (Geçmiş vakaların sağladığı sürü bağışıklığı)
+    # 2. DOĞAL BAĞIŞIKLIK HESABI (SEIR)
     hist_cases_geo = historical_cases.dropna(subset=['Lat', 'Lon'])
     hist_lat, hist_lon = hist_cases_geo['Lat'].values, hist_cases_geo['Lon'].values
 
@@ -116,13 +127,13 @@ def calculate_risk_scores(all_cases, df_pop, df_vax, df_geo, target_date, weight
 
     df_clean['Doğal_Bağışıklık'] = df_clean.apply(calculate_historical_immunity, axis=1).astype(int)
     
-    # 3. EFEKTİF KORUNMASIZ HAVUZ (Ham Kırılganlık - Hastalığı Geçirenler)
+    # 3. EFEKTİF KORUNMASIZ HAVUZ
     df_clean['Korunmasız_Cocuk'] = df_clean['Korunmasız_Ham'] - df_clean['Doğal_Bağışıklık']
     df_clean['Korunmasız_Cocuk'] = df_clean['Korunmasız_Cocuk'].apply(lambda x: max(0, x))
 
-    # 4. EFEKTİF AŞI HIZI (Doğal bağışıklık dahil gerçek güvende olma oranı)
+    # 4. EFEKTİF AŞI HIZI
     df_clean['Efektif_Asi_Hizi'] = ((df_clean['Target_Pop'] - df_clean['Korunmasız_Cocuk']) / df_clean['Target_Pop']) * 100
-    df_clean['Efektif_Asi_Hizi'] = df_clean['Efektif_Asi_Hizi'].fillna(df_clean['Toplam Aşılama Hızı']).apply(lambda x: min(100, x))
+    df_clean['Efektif_Asi_Hizi'] = df_clean['Efektif_Asi_Hizi'].fillna(df_clean['Kumulatif_Asi_Hizi']).apply(lambda x: min(100, x))
 
     # 5. AKTİF VAKA YÜKÜ HESABI (Son 6 Ay)
     recent_cases['Gun_Farki'] = (target_date - recent_cases['Tarih']).dt.days
@@ -143,7 +154,6 @@ def calculate_risk_scores(all_cases, df_pop, df_vax, df_geo, target_date, weight
     
     df_clean['Ham_Risk'] = ((df_clean['Korunmasız_Cocuk'] / max_vuln if max_vuln > 0 else 0) * weight_vuln + (df_clean['Cember_Vaka_Yuk'] / max_cases if max_cases > 0 else 0) * weight_case) * 100
     
-    # CEZA PUANI ARTIK EFEKTİF AŞI HIZI (DOĞAL BAĞIŞIKLIK DAHİL) ÜZERİNDEN KESİLİYOR
     df_clean['Ceza_Puani'] = (df_clean['Efektif_Asi_Hizi'].apply(lambda x: max(0, 95 - x)) ** 1.3) * 0.4 
     df_clean['Risk_Skoru'] = (df_clean['Ham_Risk'] + df_clean['Ceza_Puani']).apply(lambda x: min(100, x)).round(1)
     
@@ -189,6 +199,7 @@ if file_cases and file_vax:
             df_cases = pd.read_csv(file_cases) if file_cases.name.endswith('.csv') else pd.read_excel(file_cases)
             df_vax = pd.read_csv(file_vax) if file_vax.name.endswith('.csv') else pd.read_excel(file_vax)
 
+            # KOORDİNAT OKUMA (Tüm Varyasyonlar Destekli)
             if os.path.exists('ahb_geocoded.csv'): df_geo = pd.read_csv('ahb_geocoded.csv')
             elif os.path.exists('ahb_geocoded.xlsx - Geocoded.csv'): df_geo = pd.read_csv('ahb_geocoded.xlsx - Geocoded.csv')
             elif os.path.exists('ahb_geocoded.xlsx'): df_geo = pd.read_excel('ahb_geocoded.xlsx')
@@ -218,7 +229,6 @@ if file_cases and file_vax:
             # TAB 1: YZ ERKEN UYARI
             # ==========================================
             with tab1:
-                # DİKKAT: Artık recent_cases değil, tüm df_cases motora gönderiliyor (Doğal bağışıklık için)
                 df_final = calculate_risk_scores(df_cases.copy(), df_pop.copy(), df_vax.copy(), df_geo.copy(), latest_date, w_case, w_vuln)
                 
                 top_ahb_df = df_final[df_final['Risk_Skoru'] >= risk_esigi].copy()
@@ -246,8 +256,7 @@ if file_cases and file_vax:
                     return f'background-color: {color}'
                 
                 if not top_ahb_df.empty:
-                    # TABLO GÖSTERİMİNE EFEKTİF AŞI HIZI EKLENDİ
-                    st.dataframe(top_ahb_df[['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Doğal_Bağışıklık', 'Efektif_Asi_Hizi', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']].style.map(highlight_risk, subset=['Risk_Skoru']).format({"Toplam Aşılama Hızı": "{:.1f}", "Efektif_Asi_Hizi": "{:.1f}", "Risk_Skoru": "{:.1f}"}), use_container_width=True)
+                    st.dataframe(top_ahb_df[['İlçe', 'Kurum Adı', 'Target_Pop', 'Kumulatif_Asi_Hizi', 'Doğal_Bağışıklık', 'Efektif_Asi_Hizi', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']].style.map(highlight_risk, subset=['Risk_Skoru']).format({"Kumulatif_Asi_Hizi": "{:.1f}", "Efektif_Asi_Hizi": "{:.1f}", "Risk_Skoru": "{:.1f}"}), use_container_width=True)
 
                 st.subheader("🗺️ Taktik Sürveyans Haritası")
                 fig_map = go.Figure()
@@ -269,15 +278,14 @@ if file_cases and file_vax:
                     ))
                 
                 if not top_ahb_geo.empty:
-                    # BİLGİ KARTINA (HOVER) DOĞAL BAĞIŞIKLIK VERİSİ EKLENDİ
                     hover_texts = (
                         "<b>" + top_ahb_geo['Kurum Adı'] + "</b><br><br>" +
                         "📍 İlçe: " + top_ahb_geo['İlçe'] + "<br>" +
                         "🎯 Risk Skoru: <b>" + top_ahb_geo['Risk_Skoru'].astype(str) + "</b><br>" +
                         "🔥 Vaka Yükü: " + top_ahb_geo['Cember_Vaka_Yuk'].astype(str) + "<br>" +
                         "🛡️ Korunmasız Çocuk: " + top_ahb_geo['Korunmasız_Cocuk'].astype(str) + "<br>" +
-                        "💉 Kayıtlı Aşı: %" + top_ahb_geo['Toplam Aşılama Hızı'].astype(str) + "<br>" +
-                        "🦠 Doğal Bağışıklık (Geçmiş Vaka): " + top_ahb_geo['Doğal_Bağışıklık'].astype(str) + " Kişi<br>" +
+                        "📉 Kümülatif Aşı Hızı: %" + top_ahb_geo['Kumulatif_Asi_Hizi'].round(1).astype(str) + "<br>" +
+                        "🦠 Doğal Bağışıklık: " + top_ahb_geo['Doğal_Bağışıklık'].astype(str) + " Kişi<br>" +
                         "✅ Efektif Korunma Oranı: <b>%" + top_ahb_geo['Efektif_Asi_Hizi'].round(1).astype(str) + "</b>"
                     ).tolist()
                     
@@ -306,7 +314,6 @@ if file_cases and file_vax:
                 epi_data = df_cases_valid.groupby('Yıl_Ay').size().reset_index(name='Vaka Sayısı')
                 st.plotly_chart(px.line(epi_data, x='Yıl_Ay', y='Vaka Sayısı', markers=True, title="Tarihsel Vaka Gelişimi"), use_container_width=True)
                 
-                # R_t (EFEKTİF ÜREME KATSAYISI) CANLI TAKİP MOTORU
                 st.markdown("---")
                 st.markdown("### 🧬 $R_t$ (Efektif Üreme Katsayısı) Canlı Takip Modülü")
                 st.markdown("Bir vakanın ortalama kaç kişiye hastalığı bulaştırdığına dair epidemiyolojik bir proxy (yaklaşım) metrik sunar. **$R_t > 1$** salgının ivmelendiğini, **$R_t < 1$** ise filyasyonun işe yaradığını ve salgının sönümlendiğini ifade eder.")
@@ -329,16 +336,8 @@ if file_cases and file_vax:
                     
                     fig_rt.add_hline(y=1.0, line_dash="dash", line_color="white", annotation_text="Kritik Eşik ($R_t=1$)", annotation_position="bottom right")
                     
-                    fig_rt.update_layout(
-                        title='Aylık Efektif Üreme Katsayısı ($R_t$) Dalgalanması',
-                        xaxis_title='Zaman (Aylık)',
-                        yaxis_title='Rt Değeri',
-                        hovermode="x unified",
-                        template="plotly_dark"
-                    )
+                    fig_rt.update_layout(title='Aylık Efektif Üreme Katsayısı ($R_t$) Dalgalanması', xaxis_title='Zaman (Aylık)', yaxis_title='Rt Değeri', hovermode="x unified", template="plotly_dark")
                     st.plotly_chart(fig_rt, use_container_width=True)
-                else:
-                    st.warning("Rt hesaplaması yapabilmek için sisteme en az 2 aylık geçmiş vaka verisi yüklenmesi gerekmektedir.")
 
             # ==========================================
             # TAB 3: HOLT-WINTERS GELECEK TAHMİNİ
@@ -375,7 +374,6 @@ if file_cases and file_vax:
                     target_cases = df_cases[(df_cases['Tarih'] >= target_start) & (df_cases['Tarih'] <= target_end)].dropna(subset=['Lat', 'Lon']).copy()
                     
                     if len(target_cases) > 0:
-                        # BACKTEST İÇİN DE TÜM GEÇMİŞ VAKALAR GÖNDERİLİYOR
                         context_cases = df_cases[df_cases['Tarih'] <= context_end].copy()
                         predicted_df = calculate_risk_scores(context_cases, df_pop.copy(), df_vax.copy(), df_geo.copy(), context_end, w_case, w_vuln)
                         
@@ -390,14 +388,7 @@ if file_cases and file_vax:
                             c1.metric("Gerçekleşen Vaka", len(target_cases)); c2.metric("Radarımızın Yakaladığı", hits); c3.metric("İsabet Oranı", f"%{(hits/len(target_cases)*100):.1f}")
                             
                             fig_test = go.Figure()
-                            fig_test.add_trace(go.Scattermapbox(
-                                lat=top_lats, 
-                                lon=top_lons, 
-                                mode='markers', 
-                                marker=dict(size=25, color='rgba(0, 255, 255, 0.3)'), 
-                                hoverinfo='skip', 
-                                name='3KM Radar Alanı'
-                            ))
+                            fig_test.add_trace(go.Scattermapbox(lat=top_lats, lon=top_lons, mode='markers', marker=dict(size=25, color='rgba(0, 255, 255, 0.3)'), hoverinfo='skip', name='3KM Radar Alanı'))
                             
                             hover_pred = (
                                 "<b>" + top_test_ahb['Kurum Adı'] + "</b><br>" +
@@ -405,16 +396,7 @@ if file_cases and file_vax:
                                 "🎯 Model Skoru: <b>" + top_test_ahb['Risk_Skoru'].astype(str) + "</b>"
                             ).tolist()
                             
-                            fig_test.add_trace(go.Scattermapbox(
-                                lat=top_lats, 
-                                lon=top_lons, 
-                                mode='markers', 
-                                marker=dict(size=8, color='cyan'), 
-                                text=hover_pred, 
-                                hovertemplate="%{text}<extra></extra>",
-                                name='Tahmin Merkezleri'
-                            ))
-                            
+                            fig_test.add_trace(go.Scattermapbox(lat=top_lats, lon=top_lons, mode='markers', marker=dict(size=8, color='cyan'), text=hover_pred, hovertemplate="%{text}<extra></extra>", name='Tahmin Merkezleri'))
                             fig_test.add_trace(go.Scattermapbox(lat=[r['Lat'] for _, r in target_cases.iterrows() if np.any(haversine_vectorized(r['Lat'], r['Lon'], top_lats, top_lons) <= 3.0)], lon=[r['Lon'] for _, r in target_cases.iterrows() if np.any(haversine_vectorized(r['Lat'], r['Lon'], top_lats, top_lons) <= 3.0)], mode='markers', marker=dict(size=8, color='#00ff00'), name='Yakalanan Vakalar (Başarı)'))
                             fig_test.add_trace(go.Scattermapbox(lat=[r['Lat'] for _, r in target_cases.iterrows() if not np.any(haversine_vectorized(r['Lat'], r['Lon'], top_lats, top_lons) <= 3.0)], lon=[r['Lon'] for _, r in target_cases.iterrows() if not np.any(haversine_vectorized(r['Lat'], r['Lon'], top_lats, top_lons) <= 3.0)], mode='markers', marker=dict(size=8, color='#ff0000'), name='Kaçan Vakalar (Hata)'))
                                                                        
