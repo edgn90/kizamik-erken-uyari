@@ -30,7 +30,7 @@ except ValueError:
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V10.2: Kümülatif Kohort Motoru)")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V10.3: Rehberli Sürüm)")
 st.markdown("Nüfus/Koordinat altyapıları gömülüdür. Sistem artık hem **Doğal Bağışıklığı** hem de **Geçmiş Yılların Aşı Boşluklarını (Kümülatif Havuz)** otonom olarak hesaplamaktadır.")
 
 # --- 1. YÜKLEME VE AYAR MODÜLÜ (SIDEBAR) ---
@@ -215,11 +215,13 @@ if file_cases and file_vax:
                 df_cases['Lat'] = pd.to_numeric(df_cases['Lat'], errors='coerce')
                 df_cases['Lon'] = pd.to_numeric(df_cases['Lon'], errors='coerce')
 
-            tab1, tab2, tab3, tab4 = st.tabs([
+            # 5. SEKME EKLENDİ
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
                 "🎯 YZ ERKEN UYARI", 
                 "📊 TARİHSEL ANALİZ & $R_t$", 
                 "📈 HOLT-WINTERS GELECEK TAHMİNİ", 
-                "🧪 BACKTESTING (Model Sınama)"
+                "🧪 BACKTESTING (Model Sınama)",
+                "📖 RİSK HESAPLAMA REHBERİ"
             ])
             
             w_case = vaka_agirligi / 100.0
@@ -402,6 +404,41 @@ if file_cases and file_vax:
                                                                        
                             fig_test.update_layout(mapbox_style="carto-darkmatter", mapbox_center_lon=28.97, mapbox_center_lat=41.05, mapbox_zoom=9.5, margin={"r":0,"t":0,"l":0,"b":0}, legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
                             st.plotly_chart(fig_test, use_container_width=True)
+
+            # ==========================================
+            # TAB 5: RİSK HESAPLAMA REHBERİ (YENİ EKLENDİ)
+            # ==========================================
+            with tab5:
+                st.header("🧠 Sistem Algoritması ve Risk Hesaplama Metodolojisi")
+                st.markdown("""
+                Bu sekme, **Kızamık YZ Sürveyans Radarı**'nın arka planda çalıştırdığı epidemiyolojik ve matematiksel modellerin şeffaf bir özetini sunar. Hedef, veri odaklı karar verme süreçlerinizi desteklemektir.
+
+                ### 1. Kümülatif Kırılganlık ve Bağışıklık Boşluğu (Immunity Gap)
+                Sistem, risk analizi yaparken sadece mevcut yılın aşı oranlarına bağlı kalmaz. Yüklenen Aşı (KKK) veri setinde geçmiş yıllar (Örn: 2022, 2023, 2024) yer alıyorsa, sistem bu yılları tarayarak birimlerin **Kümülatif Aşı Hızını** (yılların ortalamasını) hesaplar.
+                * **Ham Kırılgan Nüfus** = Hedef Nüfus × (100 - Kümülatif Aşı Hızı) / 100
+                * *Amaç:* Kağıt üzerinde bu yıl iyi görünen ancak önceki yıllarda eksik aşılı kalıp biriken tehlikeli çocuk havuzunu yakalamak.
+
+                ### 2. Doğal Bağışıklık ve Sürü İzolasyonu (SEIR Modeli)
+                Salgınlar kendi yakıtını tüketerek sönümlenir. Sistem, hedef tarihten **6 ay ve daha eski** olan vakaları "İyileşmiş ve Doğal Bağışıklık Kazanmış" (Recovered) havuzuna aktarır.
+                * Bu kişiler, birimin çevresindeki "Ham Kırılgan Nüfus"tan çıkartılarak gerçek **Efektif Korunmasız Çocuk** sayısı elde edilir.
+                * Resmi aşılama hızı düşük olsa dahi, hastalığı geçirenler sayesinde oluşan sürü bağışıklığı ile birimin **Efektif Aşı Hızı** yukarı doğru revize edilir.
+
+                ### 3. Zaman Zayıflatmalı Mekânsal Vaka Yükü (3KM Radar)
+                Her bir Aile Hekimliği biriminin merkezine, Dünya'nın küreselliğini dikkate alan **Haversine formülü** ile 3 kilometrelik (kuş uçuşu) sanal bir çember çizilir.
+                * Son 6 ay içindeki vakalar bu çemberin içine düşüp düşmediğine göre taranır.
+                * **Zaman Zayıflatması (Decay Factor):** Her vakanın enfektivite gücü aynı değildir. Bir vakanın tehlike puanı her 30 günde bir yarı yarıya düşer. (Örn: 1 günlük vaka 1 tam puan verirken, 30 günlük vaka 0.5 puan verir).
+                * Birimin etrafındaki tüm ağırlıklandırılmış vakalar toplanarak **Çevresel Vaka Yükü** oluşturulur.
+
+                ### 4. Dinamik Ağırlıklandırma ve Ceza Sistemi
+                Kullanıcının yan menüden belirlediği ağırlıklara göre (Örn: %50 Vaka Yükü, %50 Aşısız Havuz) birleştirilmiş bir Ham Risk Skoru oluşturulur.
+                * **Sürü Bağışıklığı Cezası:** DSÖ'nün kızamık için belirlediği %95 güvenli sınırının altında kalan birimlere logaritmik bir ceza puanı kesilir. (Örn: %94 ile %80 aşı hızına sahip birimlere uygulanan ceza doğrusal değil, üsteldir). Formül: `(95 - Efektif Aşı Hızı)^1.3 * 0.4`
+                * Ham skor ve ceza puanı toplanarak **Risk Skoru** elde edilir. Puan matematiksel olarak 100 ile sınırlandırılır.
+
+                ### 5. R_t (Efektif Üreme Katsayısı) Yaklaşımı
+                Tarihsel Analiz sekmesinde görülen $R_t$ dalgalanması, vaka artış hızını ölçen bir proxy (yaklaşım) değerdir. İlgili ayın vaka sayısının, bir önceki ayın vaka sayısına bölünmesiyle elde edilir. 
+                * $R_t > 1$: Salgın büyüyor.
+                * $R_t < 1$: Önlemler işe yarıyor, salgın sönümleniyor.
+                """)
 
         except Exception as e:
             st.error(f"Hata oluştu: {e}")
