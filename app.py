@@ -30,8 +30,8 @@ except ValueError:
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V10.0: Ultimate Sürüm)")
-st.markdown("Nüfus ve Koordinat altyapıları sisteme gömülmüştür. $R_t$ takibi, dinamik ağırlıklar ve yapay zeka destekli erken uyarı ile tam teşekküllü komuta merkezi.")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V10.1: Doğal Bağışıklık Motoru)")
+st.markdown("Nüfus ve Koordinat altyapıları sisteme gömülmüştür. Sistem artık geçmiş vakalardan elde edilen **Doğal Bağışıklığı (Kazanılmış İmmünite)** hesaplayarak risk skorunu bilimsel olarak optimize eder.")
 
 # --- 1. YÜKLEME VE AYAR MODÜLÜ (SIDEBAR) ---
 st.sidebar.header("📂 Aylık Dinamik Veri Yükleme")
@@ -78,7 +78,12 @@ def extract_ahb_no(text):
     nums = re.findall(r'\d+', str(text))
     return str(int(nums[0])) if nums else "0" 
 
-def calculate_risk_scores(recent_cases, df_pop, df_vax, df_geo, target_date, weight_case, weight_vuln):
+# --- GÜNCELLENMİŞ DOĞAL BAĞIŞIKLIK (SEIR) MOTORU ---
+def calculate_risk_scores(all_cases, df_pop, df_vax, df_geo, target_date, weight_case, weight_vuln):
+    # Zaman Filtreleri (Aktif Yangın vs Geçmiş Bağışıklık)
+    recent_cases = all_cases[(all_cases['Tarih'] > target_date - pd.DateOffset(months=6)) & (all_cases['Tarih'] <= target_date)].copy()
+    historical_cases = all_cases[all_cases['Tarih'] <= target_date - pd.DateOffset(months=6)].copy()
+
     df_pop['Target_Pop'] = pd.to_numeric(df_pop['Bebek Sayısı'], errors='coerce').fillna(0) + pd.to_numeric(df_pop['Çocuk Sayısı'], errors='coerce').fillna(0)
     df_vax['Toplam Aşılama Hızı'] = pd.to_numeric(df_vax['Toplam Aşılama Hızı'], errors='coerce')
     
@@ -97,9 +102,29 @@ def calculate_risk_scores(recent_cases, df_pop, df_vax, df_geo, target_date, wei
     df_clean = pd.merge(df_merged, df_geo_unique[['İlçe_Eslenik', 'AHB_No', 'Lat', 'Lon']], on=['İlçe_Eslenik', 'AHB_No'], how='left')
     df_clean = df_clean[(df_clean['İlçe'].notna()) & (df_clean['İlçe'] != 'TUM') & (df_clean['İlçe'] != 'NAN')].copy()
     
+    # 1. HAM KIRILGANLIK HESABI
     df_clean['Unvax_Rate'] = 100 - df_clean['Toplam Aşılama Hızı']
-    df_clean['Korunmasız_Cocuk'] = (df_clean['Target_Pop'] * df_clean['Unvax_Rate'] / 100).fillna(0).astype(int)
+    df_clean['Korunmasız_Ham'] = (df_clean['Target_Pop'] * df_clean['Unvax_Rate'] / 100).fillna(0).astype(int)
 
+    # 2. DOĞAL BAĞIŞIKLIK HESABI (Geçmiş vakaların sağladığı sürü bağışıklığı)
+    hist_cases_geo = historical_cases.dropna(subset=['Lat', 'Lon'])
+    hist_lat, hist_lon = hist_cases_geo['Lat'].values, hist_cases_geo['Lon'].values
+
+    def calculate_historical_immunity(row):
+        if pd.isna(row['Lat']) or pd.isna(row['Lon']): return 0
+        return np.sum(haversine_vectorized(row['Lat'], row['Lon'], hist_lat, hist_lon) <= 3.0)
+
+    df_clean['Doğal_Bağışıklık'] = df_clean.apply(calculate_historical_immunity, axis=1).astype(int)
+    
+    # 3. EFEKTİF KORUNMASIZ HAVUZ (Ham Kırılganlık - Hastalığı Geçirenler)
+    df_clean['Korunmasız_Cocuk'] = df_clean['Korunmasız_Ham'] - df_clean['Doğal_Bağışıklık']
+    df_clean['Korunmasız_Cocuk'] = df_clean['Korunmasız_Cocuk'].apply(lambda x: max(0, x))
+
+    # 4. EFEKTİF AŞI HIZI (Doğal bağışıklık dahil gerçek güvende olma oranı)
+    df_clean['Efektif_Asi_Hizi'] = ((df_clean['Target_Pop'] - df_clean['Korunmasız_Cocuk']) / df_clean['Target_Pop']) * 100
+    df_clean['Efektif_Asi_Hizi'] = df_clean['Efektif_Asi_Hizi'].fillna(df_clean['Toplam Aşılama Hızı']).apply(lambda x: min(100, x))
+
+    # 5. AKTİF VAKA YÜKÜ HESABI (Son 6 Ay)
     recent_cases['Gun_Farki'] = (target_date - recent_cases['Tarih']).dt.days
     recent_cases['Gun_Farki'] = recent_cases['Gun_Farki'].apply(lambda x: 0 if x < 0 else x)
     recent_cases['Vaka_Agirligi'] = 0.5 ** (recent_cases['Gun_Farki'] / 30.0)
@@ -113,10 +138,13 @@ def calculate_risk_scores(recent_cases, df_pop, df_vax, df_geo, target_date, wei
 
     df_clean['Cember_Vaka_Yuk'] = df_clean.apply(calculate_3km_weighted, axis=1).round(1)
 
+    # 6. FİNAL RİSK HESAPLAMALARI
     max_vuln, max_cases = df_clean['Korunmasız_Cocuk'].max(), df_clean['Cember_Vaka_Yuk'].max()
     
     df_clean['Ham_Risk'] = ((df_clean['Korunmasız_Cocuk'] / max_vuln if max_vuln > 0 else 0) * weight_vuln + (df_clean['Cember_Vaka_Yuk'] / max_cases if max_cases > 0 else 0) * weight_case) * 100
-    df_clean['Ceza_Puani'] = (df_clean['Toplam Aşılama Hızı'].apply(lambda x: max(0, 95 - x)) ** 1.3) * 0.4 
+    
+    # CEZA PUANI ARTIK EFEKTİF AŞI HIZI (DOĞAL BAĞIŞIKLIK DAHİL) ÜZERİNDEN KESİLİYOR
+    df_clean['Ceza_Puani'] = (df_clean['Efektif_Asi_Hizi'].apply(lambda x: max(0, 95 - x)) ** 1.3) * 0.4 
     df_clean['Risk_Skoru'] = (df_clean['Ham_Risk'] + df_clean['Ceza_Puani']).apply(lambda x: min(100, x)).round(1)
     
     return df_clean[df_clean['Target_Pop'] > 50].sort_values('Risk_Skoru', ascending=False)
@@ -133,7 +161,7 @@ def create_pdf_report(dataframe, target_month_str):
     pdf.ln(5)
     
     col_widths = [30, 80, 25, 25, 35, 35, 25]
-    headers = ["Ilce", "Kurum Adi", "Hedef Nufus", "Asi Hizi(%)", "Korunmasiz Cocuk", "Cevre Vaka Yuku", "Risk Skoru"]
+    headers = ["Ilce", "Kurum Adi", "Hedef Nufus", "Efektif Asi(%)", "Korunmasiz Cocuk", "Cevre Vaka Yuku", "Risk Skoru"]
     
     pdf.set_font("Arial", 'B', 10)
     pdf.set_fill_color(200, 220, 255)
@@ -146,7 +174,7 @@ def create_pdf_report(dataframe, target_month_str):
         pdf.cell(col_widths[0], 10, clean_tr_chars(row['İlçe']), border=1, align='C')
         pdf.cell(col_widths[1], 10, clean_tr_chars(row['Kurum Adı'])[:45], border=1, align='L')
         pdf.cell(col_widths[2], 10, str(int(row['Target_Pop'])), border=1, align='C')
-        pdf.cell(col_widths[3], 10, f"%{row['Toplam Aşılama Hızı']:.1f}", border=1, align='C')
+        pdf.cell(col_widths[3], 10, f"%{row['Efektif_Asi_Hizi']:.1f}", border=1, align='C')
         pdf.cell(col_widths[4], 10, str(int(row['Korunmasız_Cocuk'])), border=1, align='C')
         pdf.cell(col_widths[5], 10, f"{row['Cember_Vaka_Yuk']:.1f}", border=1, align='C')
         pdf.cell(col_widths[6], 10, f"{row['Risk_Skoru']:.1f}", border=1, align='C')
@@ -161,7 +189,6 @@ if file_cases and file_vax:
             df_cases = pd.read_csv(file_cases) if file_cases.name.endswith('.csv') else pd.read_excel(file_cases)
             df_vax = pd.read_csv(file_vax) if file_vax.name.endswith('.csv') else pd.read_excel(file_vax)
 
-            # KOORDİNAT OKUMA GÜNCELLENDİ (YENİ DOSYA İSMİ DESTEĞİ)
             if os.path.exists('ahb_geocoded.csv'): df_geo = pd.read_csv('ahb_geocoded.csv')
             elif os.path.exists('ahb_geocoded.xlsx - Geocoded.csv'): df_geo = pd.read_csv('ahb_geocoded.xlsx - Geocoded.csv')
             elif os.path.exists('ahb_geocoded.xlsx'): df_geo = pd.read_excel('ahb_geocoded.xlsx')
@@ -191,8 +218,8 @@ if file_cases and file_vax:
             # TAB 1: YZ ERKEN UYARI
             # ==========================================
             with tab1:
-                recent_cases = df_cases[df_cases['Tarih'] >= (latest_date - pd.DateOffset(months=6))].copy()
-                df_final = calculate_risk_scores(recent_cases, df_pop.copy(), df_vax.copy(), df_geo.copy(), latest_date, w_case, w_vuln)
+                # DİKKAT: Artık recent_cases değil, tüm df_cases motora gönderiliyor (Doğal bağışıklık için)
+                df_final = calculate_risk_scores(df_cases.copy(), df_pop.copy(), df_vax.copy(), df_geo.copy(), latest_date, w_case, w_vuln)
                 
                 top_ahb_df = df_final[df_final['Risk_Skoru'] >= risk_esigi].copy()
                 top_ahb_geo = top_ahb_df.dropna(subset=['Lat', 'Lon'])
@@ -201,7 +228,7 @@ if file_cases and file_vax:
                 st.info(f"🎯 **Taktik Radar:** {target_month_str} dönemi için Risk Skoru **{risk_esigi} ve üzeri** olan toplam **{len(top_ahb_geo)} merkez** tespit edildi.")
                 
                 if not top_ahb_df.empty:
-                    export_cols = ['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']
+                    export_cols = ['İlçe', 'Kurum Adı', 'Target_Pop', 'Efektif_Asi_Hizi', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']
                     df_export = top_ahb_df[export_cols].copy()
                     col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
                     
@@ -219,11 +246,13 @@ if file_cases and file_vax:
                     return f'background-color: {color}'
                 
                 if not top_ahb_df.empty:
-                    st.dataframe(top_ahb_df[['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']].style.map(highlight_risk, subset=['Risk_Skoru']).format({"Toplam Aşılama Hızı": "{:.1f}", "Risk_Skoru": "{:.1f}"}), use_container_width=True)
+                    # TABLO GÖSTERİMİNE EFEKTİF AŞI HIZI EKLENDİ
+                    st.dataframe(top_ahb_df[['İlçe', 'Kurum Adı', 'Target_Pop', 'Toplam Aşılama Hızı', 'Doğal_Bağışıklık', 'Efektif_Asi_Hizi', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']].style.map(highlight_risk, subset=['Risk_Skoru']).format({"Toplam Aşılama Hızı": "{:.1f}", "Efektif_Asi_Hizi": "{:.1f}", "Risk_Skoru": "{:.1f}"}), use_container_width=True)
 
                 st.subheader("🗺️ Taktik Sürveyans Haritası")
                 fig_map = go.Figure()
-                recent_cases_geo = recent_cases.dropna(subset=['Lat', 'Lon'])
+                recent_cases_map = df_cases[(df_cases['Tarih'] > latest_date - pd.DateOffset(months=6)) & (df_cases['Tarih'] <= latest_date)].copy()
+                recent_cases_geo = recent_cases_map.dropna(subset=['Lat', 'Lon'])
                 
                 if not recent_cases_geo.empty:
                     recent_cases_geo['Gun_Farki'] = (latest_date - recent_cases_geo['Tarih']).dt.days
@@ -240,13 +269,16 @@ if file_cases and file_vax:
                     ))
                 
                 if not top_ahb_geo.empty:
+                    # BİLGİ KARTINA (HOVER) DOĞAL BAĞIŞIKLIK VERİSİ EKLENDİ
                     hover_texts = (
                         "<b>" + top_ahb_geo['Kurum Adı'] + "</b><br><br>" +
                         "📍 İlçe: " + top_ahb_geo['İlçe'] + "<br>" +
                         "🎯 Risk Skoru: <b>" + top_ahb_geo['Risk_Skoru'].astype(str) + "</b><br>" +
                         "🔥 Vaka Yükü: " + top_ahb_geo['Cember_Vaka_Yuk'].astype(str) + "<br>" +
                         "🛡️ Korunmasız Çocuk: " + top_ahb_geo['Korunmasız_Cocuk'].astype(str) + "<br>" +
-                        "💉 Aşı Hızı: %" + top_ahb_geo['Toplam Aşılama Hızı'].astype(str)
+                        "💉 Kayıtlı Aşı: %" + top_ahb_geo['Toplam Aşılama Hızı'].astype(str) + "<br>" +
+                        "🦠 Doğal Bağışıklık (Geçmiş Vaka): " + top_ahb_geo['Doğal_Bağışıklık'].astype(str) + " Kişi<br>" +
+                        "✅ Efektif Korunma Oranı: <b>%" + top_ahb_geo['Efektif_Asi_Hizi'].round(1).astype(str) + "</b>"
                     ).tolist()
                     
                     fig_map.add_trace(go.Scattermapbox(
@@ -339,12 +371,13 @@ if file_cases and file_vax:
                     target_start = pd.to_datetime(test_month_str)
                     target_end = target_start + pd.offsets.MonthEnd(1)
                     context_end = target_start - pd.Timedelta(days=1)
-                    context_start = context_end - pd.DateOffset(months=6)
                     
                     target_cases = df_cases[(df_cases['Tarih'] >= target_start) & (df_cases['Tarih'] <= target_end)].dropna(subset=['Lat', 'Lon']).copy()
                     
                     if len(target_cases) > 0:
-                        predicted_df = calculate_risk_scores(df_cases[(df_cases['Tarih'] >= context_start) & (df_cases['Tarih'] <= context_end)], df_pop.copy(), df_vax.copy(), df_geo.copy(), context_end, w_case, w_vuln)
+                        # BACKTEST İÇİN DE TÜM GEÇMİŞ VAKALAR GÖNDERİLİYOR
+                        context_cases = df_cases[df_cases['Tarih'] <= context_end].copy()
+                        predicted_df = calculate_risk_scores(context_cases, df_pop.copy(), df_vax.copy(), df_geo.copy(), context_end, w_case, w_vuln)
                         
                         top_test_ahb = predicted_df[predicted_df['Risk_Skoru'] >= risk_esigi].dropna(subset=['Lat', 'Lon'])
                         
