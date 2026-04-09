@@ -519,30 +519,50 @@ if file_cases and file_vax:
             # TAB 5: RİSK HESAPLAMA REHBERİ
             # ==========================================
             with tab5:
-                st.header("🧠 Sistem Algoritması ve Risk Hesaplama Metodolojisi")
+                st.header("🧠 Saf Kohort Algoritması ve Risk Hesaplama Matematiği")
                 st.markdown("""
-                Bu sekme, **Kızamık YZ Sürveyans Radarı**'nın arka planda çalıştırdığı epidemiyolojik ve matematiksel modellerin şeffaf bir özetini sunar. Hedef, veri odaklı karar verme süreçlerinizi desteklemektir.
+                Bu sekme, **Kızamık YZ Sürveyans Radarı**'nın arka planda çalıştırdığı epidemiyolojik ve matematiksel modellerin şeffaf bir özetini sunar. *(Not: Önceki versiyonlarda bulunan ve geçmiş vakaları sistemden düşen "Doğal Bağışıklık" esnekliği V10.7 ile tamamen kaldırılmış, sistem aşısız hiçbir çocuğu affetmeyen "Saf Kohort" mantığına geçirilmiştir.)*
 
-                ### 1. Kümülatif Kırılganlık ve Bağışıklık Boşluğu (Immunity Gap)
-                Sistem, risk analizi yaparken sadece mevcut yılın aşı oranlarına bağlı kalmaz. 2. Modülden yüklediğiniz **'Yıl'** sütunu içeren veriyi otonom olarak pivotlar (Geniş formata çevirir) ve her birim için yılların ortalamasını alarak **Kümülatif Aşı Hızını** hesaplar.
-                * **Ham Kırılgan Nüfus** = Hedef Nüfus × (100 - Kümülatif Aşı Hızı) / 100
-                * *Amaç:* Kağıt üzerinde bu yıl iyi görünen ancak önceki yıllarda eksik aşılı kalıp biriken tehlikeli çocuk havuzunu yakalamak. Pivotlanan yıllar tablodan incelenebilir.
+                ### 1. Kümülatif Kırılganlık (Saf Aşısız Havuzu)
+                Sistem, sadece mevcut yılın değil, yüklediğiniz **tüm geçmiş yılların aşı oranlarını** otonom olarak hesaplayarak yılların ortalaması olan **Kümülatif Aşı Hızını** bulur.
+                * **Korunmasız Çocuk** = Hedef Nüfus × (100 - Kümülatif Aşı Hızı) / 100
+                * Geçmişte o bölgede salgın olmuş olsa dahi bu sayı sistemden düşülmez; tehlike saf bir şekilde görünür kalır.
 
                 ### 2. Zaman Zayıflatmalı Mekânsal Vaka Yükü (3KM Radar)
-                Her bir Aile Hekimliği biriminin merkezine, Dünya'nın küreselliğini dikkate alan **Haversine formülü** ile 3 kilometrelik (kuş uçuşu) sanal bir çember çizilir.
-                * Son 6 ay içindeki vakalar bu çemberin içine düşüp düşmediğine göre taranır.
-                * **Zaman Zayıflatması (Decay Factor):** Her vakanın enfektivite gücü aynı değildir. Bir vakanın tehlike puanı her 30 günde bir yarı yarıya düşer. (Örn: 1 günlük vaka 1 tam puan verirken, 30 günlük vaka 0.5 puan verir).
-                * Birimin etrafındaki tüm ağırlıklandırılmış vakalar toplanarak **Çevresel Vaka Yükü** oluşturulur.
+                Her bir birimin merkezine, Dünya'nın küreselliğini dikkate alan **Haversine formülü** ile 3 kilometrelik sanal bir çember çizilir.
+                * Çemberin içindeki son 6 aya ait vakalar taranır. Her vakanın tehlike puanı her 30 günde bir yarı yarıya düşer (Decay Factor). 
+                * Örneğin; 1 günlük yepyeni bir vaka 1.0 tam puan verirken, 30 günlük eski bir vaka 0.5 puan verir. Bu puanlar toplanarak **Çevresel Vaka Yükü** oluşturulur.
 
                 ### 3. Dinamik Ağırlıklandırma ve Ceza Sistemi
-                Kullanıcının yan menüden belirlediği ağırlıklara göre (Örn: %50 Vaka Yükü, %50 Aşısız Havuz) birleştirilmiş bir Ham Risk Skoru oluşturulur.
-                * **Sürü Bağışıklığı Cezası:** DSÖ'nün kızamık için belirlediği %95 güvenli sınırının altında kalan birimlere logaritmik bir ceza puanı kesilir. (Örn: %94 ile %80 aşı hızına sahip birimlere uygulanan ceza doğrusal değil, üsteldir). Formül: `(95 - Kümülatif Aşı Hızı)^1.3 * 0.4`
-                * Ham skor ve ceza puanı toplanarak **Risk Skoru** elde edilir. Puan matematiksel olarak 100 ile sınırlandırılır.
+                Yan menüden belirlediğiniz ağırlıklara göre (% Vaka Yükü ve % Aşısız Havuz) bir Ham Risk Skoru oluşturulur. Buna ek olarak, DSÖ'nün kızamık için belirlediği **%95 güvenli sınırının** altında kalan birimlere üstel (katlanarak artan) bir ceza puanı kesilir. Formül: `(95 - Kümülatif Aşı Hızı)^1.3 * 0.4`
 
-                ### 4. R_t (Efektif Üreme Katsayısı) Yaklaşımı
-                Tarihsel Analiz sekmesinde görülen $R_t$ dalgalanması, vaka artış hızını ölçen bir proxy (yaklaşım) değerdir. İlgili ayın vaka sayısının, bir önceki ayın vaka sayısına bölünmesiyle elde edilir. 
-                * $R_t > 1$: Salgın büyüyor.
-                * $R_t < 1$: Önlemler işe yarıyor, salgın sönümleniyor.
+                ---
+                ### 📝 ÖRNEK HESAPLAMA (Adım Adım)
+                
+                **Senaryo Verileri:**
+                * Hedef Nüfusu **1000** olan bir Aile Hekimliği Birimi düşünelim.
+                * Sistem dosyaları okudu ve Kümülatif Aşı Hızını **%85** olarak buldu.
+                * Çevresinde son 6 ayda 2 vaka çıkmış: Biri bugün çıkmış (1 puan), diğeri 30 gün önce çıkmış (0.5 puan). Çevresel Vaka Yükü = **1.5 Puan**.
+                * Sizin yan menüden belirlediğiniz ağırlık: **%50 Vaka, %50 Kırılgan Nüfus**.
+                * *Arka Plan Verisi:* O ildeki en kötü mahallenin aşısız çocuk sayısı 300, en yoğun vaka yükü ise 3.0 puan olsun.
+
+                **Adım 1: Korunmasız Çocuk Sayısı**
+                * 1000 nüfus × (100 - 85) / 100 = **150 Korunmasız Çocuk**
+                
+                **Adım 2: Ham Risk Skoru**
+                * Birimi, ildeki "En Kötü Senaryoya" göre kıyaslar (Normalize eder).
+                * Aşısızlık Riski: (150 / 300) = 0.50
+                * Vaka Riski: (1.5 / 3.0) = 0.50
+                * Ağrılıklandırılmış Toplam: (0.50 × %50) + (0.50 × %50) = 0.25 + 0.25 = 0.50 
+                * 100 üzerinden Ham Skor: **50 Puan**
+
+                **Adım 3: Sürü Bağışıklığı Cezası Ekleme**
+                * Birimin aşı hızı %85. DSÖ hedefinden (%95) 10 puan geride.
+                * Ceza = 10 ^ 1.3 × 0.4 = ~19.95 × 0.4 = **Yaklaşık 8 Puan**
+
+                **Final (Nihai) Risk Skoru**
+                * Ham Skor (50) + Ceza Puanı (8) = **58.0 Risk Skoru**
+                * *Eğer siz kırmızı alarm eşiğini 60 olarak ayarladıysanız bu birim radar dışı kalır, 50 olarak ayarladıysanız listeye girer.*
                 """)
 
         except Exception as e:
