@@ -30,8 +30,8 @@ except ValueError:
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V10.5: Dinamik Pivot Motoru)")
-st.markdown("Nüfus/Koordinat altyapıları gömülüdür. Sistem 'Yıl' sütunu barındıran aşı dosyalarını otomatik algılar, birimlere göre pivotlar ve geçmiş yılları ana tabloda sunar.")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V10.6: Dinamik Pivot & Optimizasyon)")
+st.markdown("Nüfus/Koordinat altyapıları gömülüdür. Sistem 'Yıl' sütunu barındıran aşı dosyalarını otomatik pivotlar ve **Optimizasyon Motoru** ile maksimum isabet sağlayan ağırlıkları hesaplar.")
 
 # --- 1. YÜKLEME VE AYAR MODÜLÜ (SIDEBAR) ---
 st.sidebar.header("📂 Aylık Dinamik Veri Yükleme")
@@ -290,7 +290,7 @@ if file_cases and file_vax:
                 "🎯 YZ ERKEN UYARI", 
                 "📊 TARİHSEL ANALİZ & $R_t$", 
                 "📈 HOLT-WINTERS GELECEK TAHMİNİ", 
-                "🧪 BACKTESTING (Model Sınama)",
+                "🧪 BACKTEST & OPTİMİZASYON",
                 "📖 RİSK HESAPLAMA REHBERİ"
             ])
             
@@ -453,13 +453,49 @@ if file_cases and file_vax:
                     except: pass
 
             # ==========================================
-            # TAB 4: BACKTESTING 
+            # TAB 4: BACKTESTING & OPTİMİZASYON
             # ==========================================
             with tab4:
+                st.markdown("### 🚀 YZ Ağırlık Optimizasyonu")
+                st.markdown("Sistem, son 3 ayın verilerini simüle ederek vaka isabet oranını (Hit Rate) maksimize eden ideal **Vaka/Aşısızlık** ağırlığını otomatik bulur.")
+                
+                if st.button("🔎 En İyi Ağırlığı Bul (Otomatik Optimize Et)", type="secondary"):
+                    with st.spinner("Geçmiş 3 ayın tüm senaryoları simüle ediliyor..."):
+                        results = []
+                        # Son 3 ayı test et
+                        test_months = pd.date_range(end=latest_date, periods=3, freq=FREQ_M)
+                        for test_w in range(10, 100, 10):
+                            total_hits, total_cases = 0, 0
+                            for m in test_months:
+                                c_end = m - pd.Timedelta(days=1)
+                                target_c = df_cases[(df_cases['Tarih'] >= m.replace(day=1)) & (df_cases['Tarih'] <= m)].dropna(subset=['Lat', 'Lon'])
+                                
+                                if len(target_c) > 0:
+                                    context_c = df_cases[df_cases['Tarih'] <= c_end].copy()
+                                    pred = calculate_risk_scores(context_c, df_pop.copy(), df_vax.copy(), df_geo.copy(), c_end, test_w/100.0, (100-test_w)/100.0)
+                                    top_pred = pred[pred['Risk_Skoru'] >= risk_esigi].dropna(subset=['Lat', 'Lon'])
+                                    
+                                    if not top_pred.empty:
+                                        top_lats, top_lons = top_pred['Lat'].values, top_pred['Lon'].values
+                                        hits = sum(1 for _, r in target_c.iterrows() if np.any(haversine_vectorized(r['Lat'], r['Lon'], top_lats, top_lons) <= 3.0))
+                                        total_hits += hits
+                                    total_cases += len(target_c)
+                                    
+                            acc = (total_hits / total_cases * 100) if total_cases > 0 else 0
+                            results.append({'Vaka Ağırlığı (%)': test_w, 'İsabet Oranı (%)': acc})
+                        
+                        opt_df = pd.DataFrame(results)
+                        best_w = opt_df.loc[opt_df['İsabet Oranı (%)'].idxmax()]
+                        st.success(f"🏆 Optimizasyon Tamamlandı! En yüksek isabet oranı: **%{best_w['İsabet Oranı (%)']:.1f}** (Önerilen Vaka Ağırlığı: **%{best_w['Vaka Ağırlığı (%)']}**)")
+                        st.plotly_chart(px.line(opt_df, x='Vaka Ağırlığı (%)', y='İsabet Oranı (%)', markers=True, title="Ağırlık-İsabet İlişkisi"), use_container_width=True)
+                        st.info("💡 Sol menüdeki 'Vaka Yükü Ağırlığı' değerini önerilen yüzdelik dilime getirerek sistemi maksimum hassasiyete ayarlayabilirsiniz.")
+                
+                st.markdown("---")
+                st.markdown("### 🧪 Manuel Kör Test (Backtest)")
                 valid_months = pd.date_range(start=df_cases['Tarih'].min() + pd.DateOffset(months=6), end=latest_date, freq=FREQ_M).strftime('%Y-%m').tolist()
                 test_month_str = st.selectbox("Sınamak İstediğiniz Ayı Seçin:", valid_months[::-1])
                 
-                if st.button("🚀 Kör Testi Başlat (Backtest)", type="primary"):
+                if st.button("🚀 Seçili Ay İçin Kör Testi Başlat", type="primary"):
                     target_start = pd.to_datetime(test_month_str)
                     target_end = target_start + pd.offsets.MonthEnd(1)
                     context_end = target_start - pd.Timedelta(days=1)
