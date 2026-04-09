@@ -30,16 +30,16 @@ except ValueError:
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V10.4: Çoklu Kohort Motoru)")
-st.markdown("Nüfus/Koordinat altyapıları gömülüdür. Sistem geçmiş yıllara ait ayrı aşı dosyalarını aynı anda okuyarak **Kümülatif Aşı Boşluğunu** otonom birleştirir.")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V10.5: Dinamik Pivot Motoru)")
+st.markdown("Nüfus/Koordinat altyapıları gömülüdür. Sistem 'Yıl' sütunu barındıran aşı dosyalarını otomatik algılar, birimlere göre pivotlar ve geçmiş yılları ana tabloda sunar.")
 
 # --- 1. YÜKLEME VE AYAR MODÜLÜ (SIDEBAR) ---
 st.sidebar.header("📂 Aylık Dinamik Veri Yükleme")
 file_cases = st.sidebar.file_uploader("1. Vaka Listesi (Kızamık.xlsx/csv)", type=["csv", "xlsx"])
 
-# ÇOKLU DOSYA DESTEĞİ EKLENDİ (accept_multiple_files=True)
-file_vax = st.sidebar.file_uploader("2. Aşı Performansı (Geçmiş Yılları Çoklu Seçebilirsiniz)", type=["csv", "xlsx"], accept_multiple_files=True)
-st.sidebar.info("💡 **İpucu:** 2022, 2023, 2024 gibi birden fazla aşı dosyasını sürükleyip aynı anda bırakırsanız, sistem hepsini otomatik birleştirip Kümülatif (Birikmiş) risk havuzunu hesaplar.")
+# ÇOKLU DOSYA DESTEĞİ
+file_vax = st.sidebar.file_uploader("2. Aşı Performansı (Geçmiş Yılları İçeren Dosya)", type=["csv", "xlsx"], accept_multiple_files=True)
+st.sidebar.info("💡 **İpucu:** Dosyanızda 'Yıl' sütunu varsa sistem otomatik olarak geçmiş yılları tabloya sütun olarak ekler ve kümülatif riski hesaplar.")
 
 st.sidebar.markdown("---")
 st.sidebar.header("🎛️ Radar Ayarları")
@@ -63,6 +63,7 @@ def tr_upper(text):
     return str(text).replace('i', 'İ').replace('ı', 'I').replace('i̇', 'İ').upper().strip()
 
 def clean_tr_chars(text):
+    """PDF içindeki olası font hatalarını önlemek için Türkçe karakterleri standart Latin harflerine çevirir."""
     tr_map = {'ç':'c', 'ğ':'g', 'ı':'i', 'ö':'o', 'ş':'s', 'ü':'u', 'Ç':'C', 'Ğ':'G', 'İ':'I', 'Ö':'O', 'Ş':'S', 'Ü':'U'}
     res = str(text)
     for k, v in tr_map.items(): 
@@ -81,30 +82,40 @@ def extract_ahb_no(text):
     nums = re.findall(r'\d+', str(text))
     return str(int(nums[0])) if nums else "0" 
 
-# --- GÜNCELLENMİŞ RİSK MOTORU (Kümülatif Kohort & SEIR) ---
+# --- GÜNCELLENMİŞ RİSK MOTORU (Pivot & SEIR) ---
 def calculate_risk_scores(all_cases, df_pop, df_vax, df_geo, target_date, weight_case, weight_vuln):
     recent_cases = all_cases[(all_cases['Tarih'] > target_date - pd.DateOffset(months=6)) & (all_cases['Tarih'] <= target_date)].copy()
     historical_cases = all_cases[all_cases['Tarih'] <= target_date - pd.DateOffset(months=6)].copy()
 
     df_pop['Target_Pop'] = pd.to_numeric(df_pop['Bebek Sayısı'], errors='coerce').fillna(0) + pd.to_numeric(df_pop['Çocuk Sayısı'], errors='coerce').fillna(0)
-    df_vax['Toplam Aşılama Hızı'] = pd.to_numeric(df_vax['Toplam Aşılama Hızı'], errors='coerce')
     
-    # 0. KÜMÜLATİF KOHORT TARAYICISI
-    hist_vax_cols = [col for col in df_vax.columns if re.search(r'20[1-2][0-9]', str(col))]
+    # 0. KÜMÜLATİF KOHORT TARAYICISI (Pivot edilmiş geçmiş yıllar)
+    hist_vax_cols = sorted([col for col in df_vax.columns if re.match(r'^20[1-2][0-9]$', str(col))])
+    
     if len(hist_vax_cols) > 0:
         for col in hist_vax_cols:
             df_vax[col] = pd.to_numeric(df_vax[col], errors='coerce')
-        # Sadece sayısal (NaN olmayan) yılları ortalayarak Kümülatif Aşı Hızını bul
+        # Sadece sayısal olan geçmiş yılları ortalayarak Kümülatif Aşı Hızını bul
         df_vax['Kumulatif_Asi_Hizi'] = df_vax[hist_vax_cols].mean(axis=1)
     else:
+        df_vax['Toplam Aşılama Hızı'] = pd.to_numeric(df_vax['Toplam Aşılama Hızı'], errors='coerce')
         df_vax['Kumulatif_Asi_Hizi'] = df_vax['Toplam Aşılama Hızı']
     
     df_pop['İlçe_Eslenik'] = df_pop['İlçe'].apply(tr_upper)
     df_pop['AHB_No'] = df_pop['Kurum Adı'].apply(extract_ahb_no)
-    df_vax['İlçe_Eslenik'] = df_vax['İlçe'].apply(tr_upper)
-    df_vax['AHB_No'] = df_vax['Kurum Adı'].apply(extract_ahb_no)
     
-    df_merged = pd.merge(df_pop[['İlçe_Eslenik', 'AHB_No', 'İlçe', 'Kurum Adı', 'Target_Pop']], df_vax[['İlçe_Eslenik', 'AHB_No', 'Toplam Aşılama Hızı', 'Kumulatif_Asi_Hizi']], on=['İlçe_Eslenik', 'AHB_No'], how='inner')
+    if 'İlçe' in df_vax.columns:
+        df_vax['İlçe_Eslenik'] = df_vax['İlçe'].apply(tr_upper)
+    if 'Kurum Adı' in df_vax.columns:
+        df_vax['AHB_No'] = df_vax['Kurum Adı'].apply(extract_ahb_no)
+    
+    # Tüm dinamik aşı sütunlarını al
+    merge_cols = ['İlçe_Eslenik', 'AHB_No', 'Kumulatif_Asi_Hizi'] + hist_vax_cols
+    if 'Toplam Aşılama Hızı' in df_vax.columns:
+        merge_cols.append('Toplam Aşılama Hızı')
+    merge_cols = list(dict.fromkeys(merge_cols)) # Duplikeleri sil
+    
+    df_merged = pd.merge(df_pop[['İlçe_Eslenik', 'AHB_No', 'İlçe', 'Kurum Adı', 'Target_Pop']], df_vax[merge_cols], on=['İlçe_Eslenik', 'AHB_No'], how='inner')
     
     col_name = 'Birim Adı' if 'Birim Adı' in df_geo.columns else 'Kurum Adı'
     df_geo['İlçe_Eslenik'] = df_geo['İlçe'].apply(tr_upper) if 'İlçe' in df_geo.columns else "BİLİNMİYOR"
@@ -195,47 +206,66 @@ def create_pdf_report(dataframe, target_month_str):
 
 # --- ANA İŞLEYİŞ ---
 if file_cases and file_vax:
-    with st.spinner('Sistem Başlatılıyor ve Kohort Verileri Okunuyor...'):
+    with st.spinner('Sistem Başlatılıyor ve Dinamik Kohort Verileri Okunuyor...'):
         try:
             # 1. VAKA DOSYASI OKUMA
             df_cases = pd.read_csv(file_cases) if file_cases.name.endswith('.csv') else pd.read_excel(file_cases)
 
-            # 2. ÇOKLU AŞI DOSYASI OKUMA VE BİRLEŞTİRME (V10.4 YENİLİĞİ)
+            # 2. AŞI DOSYASI OKUMA (Yıl Sütununa Göre Pivot Özelliği Eklendi)
             all_vax_frames = []
             detected_years = []
             
-            # Eğer tek dosya seçildiyse de listeye çevir
             if not isinstance(file_vax, list): file_vax = [file_vax]
                 
             for v_file in file_vax:
                 t = pd.read_csv(v_file) if v_file.name.endswith('.csv') else pd.read_excel(v_file)
-                # Dosya isminden yılı bul (Örn: "...2022 KKK.csv" -> "2022")
-                year_match = re.search(r'(20[1-2][0-9])', v_file.name)
-                col_name = year_match.group(1) if year_match else 'Toplam Aşılama Hızı'
                 
-                if year_match and col_name not in detected_years:
-                    detected_years.append(col_name)
+                # 'Yıl' veya benzeri sütun arama
+                y_col_candidates = [c for c in t.columns if str(c).strip().lower() in ['yıl', 'yil', 'year']]
                 
-                if 'Toplam Aşılama Hızı' in t.columns:
-                    t = t[['İlçe', 'Kurum Adı', 'Toplam Aşılama Hızı']].copy()
-                    t.rename(columns={'Toplam Aşılama Hızı': col_name}, inplace=True)
+                if y_col_candidates and 'Toplam Aşılama Hızı' in t.columns:
+                    # UZUN FORMAT BULUNDU -> GENİŞ FORMATA PİVOTLA
+                    y_col = y_col_candidates[0]
                     t['İlçe_Eslenik'] = t['İlçe'].apply(tr_upper)
                     t['AHB_No'] = t['Kurum Adı'].apply(extract_ahb_no)
-                    t = t.groupby(['İlçe_Eslenik', 'AHB_No']).first().reset_index()
-                    all_vax_frames.append(t)
+                    
+                    pivoted = t.pivot_table(index=['İlçe_Eslenik', 'AHB_No'], columns=y_col, values='Toplam Aşılama Hızı', aggfunc='mean').reset_index()
+                    
+                    # Sütun isimlerini string yıllara çevir
+                    pivoted.columns = [str(c) for c in pivoted.columns]
+                    for c in pivoted.columns:
+                        if re.match(r'^20[1-2][0-9](\.0)?$', c):
+                            clean_year = str(int(float(c)))
+                            pivoted.rename(columns={c: clean_year}, inplace=True)
+                            if clean_year not in detected_years: detected_years.append(clean_year)
+                    
+                    all_vax_frames.append(pivoted)
+                else:
+                    # ESKİ MANTIK (Dosya isminden yıl bul)
+                    year_match = re.search(r'(20[1-2][0-9])', v_file.name)
+                    col_name = year_match.group(1) if year_match else 'Toplam Aşılama Hızı'
+                    if year_match and col_name not in detected_years: detected_years.append(col_name)
+                    
+                    if 'Toplam Aşılama Hızı' in t.columns:
+                        t = t[['İlçe', 'Kurum Adı', 'Toplam Aşılama Hızı']].copy()
+                        t.rename(columns={'Toplam Aşılama Hızı': col_name}, inplace=True)
+                        t['İlçe_Eslenik'] = t['İlçe'].apply(tr_upper)
+                        t['AHB_No'] = t['Kurum Adı'].apply(extract_ahb_no)
+                        t = t.groupby(['İlçe_Eslenik', 'AHB_No']).first().reset_index()
+                        all_vax_frames.append(t)
             
             if not all_vax_frames:
                 st.error("🚨 HATA: Aşı dosyaları okunamadı veya uygun formatta değil!")
                 st.stop()
                 
-            # Tüm aşı yıllarını tek bir veri setinde birleştir (Outer Join)
+            # Aşı çerçevelerini birleştir
             df_vax = all_vax_frames[0]
-            for df in all_vax_frames[1:]:
-                cols_to_use = ['İlçe_Eslenik', 'AHB_No'] + [c for c in df.columns if c not in df_vax.columns]
-                df_vax = pd.merge(df_vax, df[cols_to_use], on=['İlçe_Eslenik', 'AHB_No'], how='outer')
+            for df_temp in all_vax_frames[1:]:
+                cols_to_use = ['İlçe_Eslenik', 'AHB_No'] + [c for c in df_temp.columns if c not in df_vax.columns]
+                df_vax = pd.merge(df_vax, df_temp[cols_to_use], on=['İlçe_Eslenik', 'AHB_No'], how='outer')
             
-            # Eğer "Toplam Aşılama Hızı" (Güncel Hız) adında bir sütun yoksa, tespit edilen en son yılı güncel hız kabul et
-            year_cols = sorted([c for c in df_vax.columns if re.match(r'^20\d{2}$', str(c))])
+            # Güncel hızı belirle
+            year_cols = sorted([c for c in df_vax.columns if re.match(r'^20[1-2][0-9]$', str(c))])
             if 'Toplam Aşılama Hızı' not in df_vax.columns and len(year_cols) > 0:
                 df_vax['Toplam Aşılama Hızı'] = df_vax[year_cols[-1]]
 
@@ -272,8 +302,9 @@ if file_cases and file_vax:
             # ==========================================
             with tab1:
                 # Kohort Bilgilendirmesi
+                detected_years = sorted(list(set(detected_years)))
                 if len(detected_years) > 1:
-                    st.success(f"🧬 **Kohort Motoru Aktif:** {', '.join(sorted(detected_years))} yıllarına ait dosyalar otonom olarak birleştirildi ve Kümülatif Aşı hafızası oluşturuldu.")
+                    st.success(f"🧬 **Kohort Motoru Aktif:** Dosyanızdaki geçmiş yıllar ({', '.join(detected_years)}) başarıyla pivotlanarak Kümülatif Bağışıklık havuzuna dönüştürüldü.")
 
                 df_final = calculate_risk_scores(df_cases.copy(), df_pop.copy(), df_vax.copy(), df_geo.copy(), latest_date, w_case, w_vuln)
                 
@@ -284,7 +315,11 @@ if file_cases and file_vax:
                 st.info(f"🎯 **Taktik Radar:** {target_month_str} dönemi için Risk Skoru **{risk_esigi} ve üzeri** olan toplam **{len(top_ahb_geo)} merkez** tespit edildi.")
                 
                 if not top_ahb_df.empty:
-                    export_cols = ['İlçe', 'Kurum Adı', 'Target_Pop', 'Efektif_Asi_Hizi', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']
+                    # PDF ve Excel İndirme Butonları
+                    export_cols = ['İlçe', 'Kurum Adı', 'Target_Pop'] + detected_years + ['Kumulatif_Asi_Hizi', 'Efektif_Asi_Hizi', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']
+                    # Verisetindeki olası eksik sütunları pas geçmek için filtre:
+                    export_cols = [c for c in export_cols if c in top_ahb_df.columns]
+                    
                     df_export = top_ahb_df[export_cols].copy()
                     col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
                     
@@ -294,7 +329,8 @@ if file_cases and file_vax:
                     col1.download_button(label="📥 Excel Olarak İndir", data=excel_buffer.getvalue(), file_name=f"Kizamik_Risk_{target_month_str}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
                     
                     if FPDF is not None:
-                        col2.download_button(label="📄 PDF Olarak İndir", data=create_pdf_report(df_export, target_month_str), file_name=f"Kizamik_Risk_{target_month_str}.pdf", mime="application/pdf", type="primary")
+                        # PDF formatında geçmiş yılları tek tek sığdırmak zor olacağı için özet çıkarılır
+                        col2.download_button(label="📄 PDF Olarak İndir", data=create_pdf_report(top_ahb_df[['İlçe', 'Kurum Adı', 'Target_Pop', 'Efektif_Asi_Hizi', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']].copy(), target_month_str), file_name=f"Kizamik_Risk_{target_month_str}.pdf", mime="application/pdf", type="primary")
 
                 st.markdown("---")
                 def highlight_risk(val):
@@ -302,7 +338,18 @@ if file_cases and file_vax:
                     return f'background-color: {color}'
                 
                 if not top_ahb_df.empty:
-                    st.dataframe(top_ahb_df[['İlçe', 'Kurum Adı', 'Target_Pop', 'Kumulatif_Asi_Hizi', 'Doğal_Bağışıklık', 'Efektif_Asi_Hizi', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru']].style.map(highlight_risk, subset=['Risk_Skoru']).format({"Kumulatif_Asi_Hizi": "{:.1f}", "Efektif_Asi_Hizi": "{:.1f}", "Risk_Skoru": "{:.1f}"}), use_container_width=True)
+                    # ANA TABLODA GÖSTERİLECEK SÜTUNLAR (GEÇMİŞ YILLAR DAHİL)
+                    display_cols = ['İlçe', 'Kurum Adı', 'Target_Pop']
+                    hist_disp_cols = sorted([c for c in top_ahb_df.columns if re.match(r'^20[1-2][0-9]$', str(c))])
+                    display_cols.extend(hist_disp_cols)
+                    display_cols.extend(['Kumulatif_Asi_Hizi', 'Doğal_Bağışıklık', 'Efektif_Asi_Hizi', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru'])
+                    
+                    # Dinamik formatlama (Geçmiş yıllar için de virgülden sonra tek hane)
+                    format_dict = {"Kumulatif_Asi_Hizi": "{:.1f}", "Efektif_Asi_Hizi": "{:.1f}", "Risk_Skoru": "{:.1f}"}
+                    for hc in hist_disp_cols:
+                        format_dict[hc] = "{:.1f}"
+                        
+                    st.dataframe(top_ahb_df[display_cols].style.map(highlight_risk, subset=['Risk_Skoru']).format(format_dict), use_container_width=True)
 
                 st.subheader("🗺️ Taktik Sürveyans Haritası")
                 fig_map = go.Figure()
@@ -458,9 +505,9 @@ if file_cases and file_vax:
                 Bu sekme, **Kızamık YZ Sürveyans Radarı**'nın arka planda çalıştırdığı epidemiyolojik ve matematiksel modellerin şeffaf bir özetini sunar. Hedef, veri odaklı karar verme süreçlerinizi desteklemektir.
 
                 ### 1. Kümülatif Kırılganlık ve Bağışıklık Boşluğu (Immunity Gap)
-                Sistem, risk analizi yaparken sadece mevcut yılın aşı oranlarına bağlı kalmaz. 2. Modülden yüklediğiniz **çoklu aşı dosyalarını (Örn: 2022, 2023, 2024...)** otonom olarak birleştirir ve **Kümülatif Aşı Hızını** (yılların ortalamasını) hesaplar.
+                Sistem, risk analizi yaparken sadece mevcut yılın aşı oranlarına bağlı kalmaz. 2. Modülden yüklediğiniz **'Yıl'** sütunu içeren veriyi otonom olarak pivotlar (Geniş formata çevirir) ve her birim için yılların ortalamasını alarak **Kümülatif Aşı Hızını** hesaplar.
                 * **Ham Kırılgan Nüfus** = Hedef Nüfus × (100 - Kümülatif Aşı Hızı) / 100
-                * *Amaç:* Kağıt üzerinde bu yıl iyi görünen ancak önceki yıllarda eksik aşılı kalıp biriken tehlikeli çocuk havuzunu yakalamak.
+                * *Amaç:* Kağıt üzerinde bu yıl iyi görünen ancak önceki yıllarda eksik aşılı kalıp biriken tehlikeli çocuk havuzunu yakalamak. Pivotlanan yıllar tablodan incelenebilir.
 
                 ### 2. Doğal Bağışıklık ve Sürü İzolasyonu (SEIR Modeli)
                 Salgınlar kendi yakıtını tüketerek sönümlenir. Sistem, hedef tarihten **6 ay ve daha eski** olan vakaları "İyileşmiş ve Doğal Bağışıklık Kazanmış" (Recovered) havuzuna aktarır.
