@@ -30,8 +30,8 @@ except ValueError:
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V10.6: Dinamik Pivot & Optimizasyon)")
-st.markdown("Nüfus/Koordinat altyapıları gömülüdür. Sistem 'Yıl' sütunu barındıran aşı dosyalarını otomatik pivotlar ve **Optimizasyon Motoru** ile maksimum isabet sağlayan ağırlıkları hesaplar.")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V10.7: Saf Kohort & Optimizasyon)")
+st.markdown("Nüfus/Koordinat altyapıları gömülüdür. Sistem 'Yıl' sütunu barındıran aşı dosyalarını otomatik pivotlar, Saf Kümülatif Riski hesaplar ve **Optimizasyon Motoru** ile maksimum isabeti hedefler.")
 
 # --- 1. YÜKLEME VE AYAR MODÜLÜ (SIDEBAR) ---
 st.sidebar.header("📂 Aylık Dinamik Veri Yükleme")
@@ -82,10 +82,9 @@ def extract_ahb_no(text):
     nums = re.findall(r'\d+', str(text))
     return str(int(nums[0])) if nums else "0" 
 
-# --- GÜNCELLENMİŞ RİSK MOTORU (Pivot & SEIR) ---
+# --- GÜNCELLENMİŞ RİSK MOTORU (Saf Kohort - SEIR Kaldırıldı) ---
 def calculate_risk_scores(all_cases, df_pop, df_vax, df_geo, target_date, weight_case, weight_vuln):
     recent_cases = all_cases[(all_cases['Tarih'] > target_date - pd.DateOffset(months=6)) & (all_cases['Tarih'] <= target_date)].copy()
-    historical_cases = all_cases[all_cases['Tarih'] <= target_date - pd.DateOffset(months=6)].copy()
 
     df_pop['Target_Pop'] = pd.to_numeric(df_pop['Bebek Sayısı'], errors='coerce').fillna(0) + pd.to_numeric(df_pop['Çocuk Sayısı'], errors='coerce').fillna(0)
     
@@ -125,29 +124,14 @@ def calculate_risk_scores(all_cases, df_pop, df_vax, df_geo, target_date, weight
     df_clean = pd.merge(df_merged, df_geo_unique[['İlçe_Eslenik', 'AHB_No', 'Lat', 'Lon']], on=['İlçe_Eslenik', 'AHB_No'], how='left')
     df_clean = df_clean[(df_clean['İlçe'].notna()) & (df_clean['İlçe'] != 'TUM') & (df_clean['İlçe'] != 'NAN')].copy()
     
-    # 1. HAM KIRILGANLIK HESABI (KÜMÜLATİF HIZ ÜZERİNDEN)
+    # 1. HAM KIRILGANLIK HESABI (SAF KÜMÜLATİF HIZ ÜZERİNDEN - Doğal Bağışıklık Kaldırıldı)
     df_clean['Unvax_Rate'] = 100 - df_clean['Kumulatif_Asi_Hizi']
-    df_clean['Korunmasız_Ham'] = (df_clean['Target_Pop'] * df_clean['Unvax_Rate'] / 100).fillna(0).astype(int)
+    df_clean['Korunmasız_Cocuk'] = (df_clean['Target_Pop'] * df_clean['Unvax_Rate'] / 100).fillna(0).astype(int)
 
-    # 2. DOĞAL BAĞIŞIKLIK HESABI (SEIR)
-    hist_cases_geo = historical_cases.dropna(subset=['Lat', 'Lon'])
-    hist_lat, hist_lon = hist_cases_geo['Lat'].values, hist_cases_geo['Lon'].values
+    # 2. EFEKTİF AŞI HIZI (Doğal bağışıklık olmadığı için direkt Kümülatife eşit kalıyor)
+    df_clean['Efektif_Asi_Hizi'] = (((df_clean['Target_Pop'] - df_clean['Korunmasız_Cocuk']) / df_clean['Target_Pop']) * 100).apply(lambda x: min(100, x))
 
-    def calculate_historical_immunity(row):
-        if pd.isna(row['Lat']) or pd.isna(row['Lon']): return 0
-        return np.sum(haversine_vectorized(row['Lat'], row['Lon'], hist_lat, hist_lon) <= 3.0)
-
-    df_clean['Doğal_Bağışıklık'] = df_clean.apply(calculate_historical_immunity, axis=1).astype(int)
-    
-    # 3. EFEKTİF KORUNMASIZ HAVUZ
-    df_clean['Korunmasız_Cocuk'] = df_clean['Korunmasız_Ham'] - df_clean['Doğal_Bağışıklık']
-    df_clean['Korunmasız_Cocuk'] = df_clean['Korunmasız_Cocuk'].apply(lambda x: max(0, x))
-
-    # 4. EFEKTİF AŞI HIZI
-    df_clean['Efektif_Asi_Hizi'] = ((df_clean['Target_Pop'] - df_clean['Korunmasız_Cocuk']) / df_clean['Target_Pop']) * 100
-    df_clean['Efektif_Asi_Hizi'] = df_clean['Efektif_Asi_Hizi'].fillna(df_clean['Kumulatif_Asi_Hizi']).apply(lambda x: min(100, x))
-
-    # 5. AKTİF VAKA YÜKÜ HESABI (Son 6 Ay)
+    # 3. AKTİF VAKA YÜKÜ HESABI (Son 6 Ay)
     recent_cases['Gun_Farki'] = (target_date - recent_cases['Tarih']).dt.days
     recent_cases['Gun_Farki'] = recent_cases['Gun_Farki'].apply(lambda x: 0 if x < 0 else x)
     recent_cases['Vaka_Agirligi'] = 0.5 ** (recent_cases['Gun_Farki'] / 30.0)
@@ -161,7 +145,7 @@ def calculate_risk_scores(all_cases, df_pop, df_vax, df_geo, target_date, weight
 
     df_clean['Cember_Vaka_Yuk'] = df_clean.apply(calculate_3km_weighted, axis=1).round(1)
 
-    # 6. FİNAL RİSK HESAPLAMALARI
+    # 4. FİNAL RİSK HESAPLAMALARI
     max_vuln, max_cases = df_clean['Korunmasız_Cocuk'].max(), df_clean['Cember_Vaka_Yuk'].max()
     
     df_clean['Ham_Risk'] = ((df_clean['Korunmasız_Cocuk'] / max_vuln if max_vuln > 0 else 0) * weight_vuln + (df_clean['Cember_Vaka_Yuk'] / max_cases if max_cases > 0 else 0) * weight_case) * 100
@@ -338,11 +322,11 @@ if file_cases and file_vax:
                     return f'background-color: {color}'
                 
                 if not top_ahb_df.empty:
-                    # ANA TABLODA GÖSTERİLECEK SÜTUNLAR (GEÇMİŞ YILLAR DAHİL)
+                    # ANA TABLODA GÖSTERİLECEK SÜTUNLAR (GEÇMİŞ YILLAR DAHİL, Doğal Bağışıklık Kaldırıldı)
                     display_cols = ['İlçe', 'Kurum Adı', 'Target_Pop']
                     hist_disp_cols = sorted([c for c in top_ahb_df.columns if re.match(r'^20[1-2][0-9]$', str(c))])
                     display_cols.extend(hist_disp_cols)
-                    display_cols.extend(['Kumulatif_Asi_Hizi', 'Doğal_Bağışıklık', 'Efektif_Asi_Hizi', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru'])
+                    display_cols.extend(['Kumulatif_Asi_Hizi', 'Efektif_Asi_Hizi', 'Korunmasız_Cocuk', 'Cember_Vaka_Yuk', 'Risk_Skoru'])
                     
                     # Dinamik formatlama (Geçmiş yıllar için de virgülden sonra tek hane)
                     format_dict = {"Kumulatif_Asi_Hizi": "{:.1f}", "Efektif_Asi_Hizi": "{:.1f}", "Risk_Skoru": "{:.1f}"}
@@ -378,7 +362,6 @@ if file_cases and file_vax:
                         "🔥 Vaka Yükü: " + top_ahb_geo['Cember_Vaka_Yuk'].astype(str) + "<br>" +
                         "🛡️ Korunmasız Çocuk: " + top_ahb_geo['Korunmasız_Cocuk'].astype(str) + "<br>" +
                         "📉 Kümülatif Aşı Hızı: %" + top_ahb_geo['Kumulatif_Asi_Hizi'].round(1).astype(str) + "<br>" +
-                        "🦠 Doğal Bağışıklık: " + top_ahb_geo['Doğal_Bağışıklık'].astype(str) + " Kişi<br>" +
                         "✅ Efektif Korunma Oranı: <b>%" + top_ahb_geo['Efektif_Asi_Hizi'].round(1).astype(str) + "</b>"
                     ).tolist()
                     
@@ -545,23 +528,18 @@ if file_cases and file_vax:
                 * **Ham Kırılgan Nüfus** = Hedef Nüfus × (100 - Kümülatif Aşı Hızı) / 100
                 * *Amaç:* Kağıt üzerinde bu yıl iyi görünen ancak önceki yıllarda eksik aşılı kalıp biriken tehlikeli çocuk havuzunu yakalamak. Pivotlanan yıllar tablodan incelenebilir.
 
-                ### 2. Doğal Bağışıklık ve Sürü İzolasyonu (SEIR Modeli)
-                Salgınlar kendi yakıtını tüketerek sönümlenir. Sistem, hedef tarihten **6 ay ve daha eski** olan vakaları "İyileşmiş ve Doğal Bağışıklık Kazanmış" (Recovered) havuzuna aktarır.
-                * Bu kişiler, birimin çevresindeki "Ham Kırılgan Nüfus"tan çıkartılarak gerçek **Efektif Korunmasız Çocuk** sayısı elde edilir.
-                * Resmi aşılama hızı düşük olsa dahi, hastalığı geçirenler sayesinde oluşan sürü bağışıklığı ile birimin **Efektif Aşı Hızı** yukarı doğru revize edilir.
-
-                ### 3. Zaman Zayıflatmalı Mekânsal Vaka Yükü (3KM Radar)
+                ### 2. Zaman Zayıflatmalı Mekânsal Vaka Yükü (3KM Radar)
                 Her bir Aile Hekimliği biriminin merkezine, Dünya'nın küreselliğini dikkate alan **Haversine formülü** ile 3 kilometrelik (kuş uçuşu) sanal bir çember çizilir.
                 * Son 6 ay içindeki vakalar bu çemberin içine düşüp düşmediğine göre taranır.
                 * **Zaman Zayıflatması (Decay Factor):** Her vakanın enfektivite gücü aynı değildir. Bir vakanın tehlike puanı her 30 günde bir yarı yarıya düşer. (Örn: 1 günlük vaka 1 tam puan verirken, 30 günlük vaka 0.5 puan verir).
                 * Birimin etrafındaki tüm ağırlıklandırılmış vakalar toplanarak **Çevresel Vaka Yükü** oluşturulur.
 
-                ### 4. Dinamik Ağırlıklandırma ve Ceza Sistemi
+                ### 3. Dinamik Ağırlıklandırma ve Ceza Sistemi
                 Kullanıcının yan menüden belirlediği ağırlıklara göre (Örn: %50 Vaka Yükü, %50 Aşısız Havuz) birleştirilmiş bir Ham Risk Skoru oluşturulur.
-                * **Sürü Bağışıklığı Cezası:** DSÖ'nün kızamık için belirlediği %95 güvenli sınırının altında kalan birimlere logaritmik bir ceza puanı kesilir. (Örn: %94 ile %80 aşı hızına sahip birimlere uygulanan ceza doğrusal değil, üsteldir). Formül: `(95 - Efektif Aşı Hızı)^1.3 * 0.4`
+                * **Sürü Bağışıklığı Cezası:** DSÖ'nün kızamık için belirlediği %95 güvenli sınırının altında kalan birimlere logaritmik bir ceza puanı kesilir. (Örn: %94 ile %80 aşı hızına sahip birimlere uygulanan ceza doğrusal değil, üsteldir). Formül: `(95 - Kümülatif Aşı Hızı)^1.3 * 0.4`
                 * Ham skor ve ceza puanı toplanarak **Risk Skoru** elde edilir. Puan matematiksel olarak 100 ile sınırlandırılır.
 
-                ### 5. R_t (Efektif Üreme Katsayısı) Yaklaşımı
+                ### 4. R_t (Efektif Üreme Katsayısı) Yaklaşımı
                 Tarihsel Analiz sekmesinde görülen $R_t$ dalgalanması, vaka artış hızını ölçen bir proxy (yaklaşım) değerdir. İlgili ayın vaka sayısının, bir önceki ayın vaka sayısına bölünmesiyle elde edilir. 
                 * $R_t > 1$: Salgın büyüyor.
                 * $R_t < 1$: Önlemler işe yarıyor, salgın sönümleniyor.
