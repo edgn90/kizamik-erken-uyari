@@ -425,14 +425,42 @@ if file_cases and file_vax:
                         ts_df = ts_df.reindex(pd.date_range(ts_df.index.min(), latest_date, freq=FREQ_M), fill_value=0)
                         
                         if len(ts_df) >= 12:
+                            # Model Kurulumu ve Tahmin
                             model = ExponentialSmoothing(ts_df, trend='add', seasonal='add', seasonal_periods=12 if len(ts_df)>=24 else None, initialization_method="estimated").fit()
                             forecast = model.forecast(6).apply(lambda x: max(0, x))
                             st.error(f"🚨 ÖNGÖRÜ: Gelecek 6 ayın zirvesi **{aylar.get(forecast.idxmax().month)} {forecast.idxmax().year}** (Tahmini Vaka: {int(forecast.max())})")
+                            
+                            # GRAFİK 1: AYLIK BAZDA TAHMİN (Mevcut Grafik)
+                            st.markdown("### 📉 Aylık Vaka Seyri ve Tahmini")
                             fig_hw = go.Figure()
                             fig_hw.add_trace(go.Scatter(x=ts_df.index, y=ts_df.values, mode='lines+markers', name='Gerçekleşen Vakalar', line=dict(color='#1f77b4', width=2)))
                             fig_hw.add_trace(go.Scatter(x=forecast.index, y=forecast.values, mode='lines+markers', name='Holt-Winters YZ Tahmini', line=dict(color='#00ff00', width=3, dash='dot')))
                             fig_hw.update_layout(template="plotly_dark", hovermode="x unified")
                             st.plotly_chart(fig_hw, use_container_width=True)
+
+                            st.markdown("---")
+                            
+                            # GRAFİK 2: KÜMÜLATİF (BİRİKİMLİ) VAKA TAHMİNİ (YENİ EKLENEN GRAFİK)
+                            st.markdown("### 📈 Kümülatif (Toplam) Vaka Yükü Tahmini")
+                            st.info("Bu grafik, salgının başından itibaren aylık olarak toplanan toplam vaka birikimini ve önümüzdeki 6 ay içinde bu sayının nereye ulaşacağını gösterir. Yatak/İlaç planlaması için kullanılır.")
+                            
+                            # Kümülatif Hesaplamalar
+                            ts_cum = ts_df.cumsum()
+                            forecast_cum = forecast.cumsum() + ts_cum.iloc[-1]
+                            
+                            # Çizgilerin grafikte kopuk durmaması için geçmişin son verisiyle geleceği bağlıyoruz
+                            forecast_cum_plot = pd.concat([pd.Series({ts_cum.index[-1]: ts_cum.iloc[-1]}), forecast_cum])
+                            
+                            fig_cum = go.Figure()
+                            # Gerçekleşen Kümülatif Çizgi (Altı Doldurulmuş)
+                            fig_cum.add_trace(go.Scatter(x=ts_cum.index, y=ts_cum.values, mode='lines+markers', name='Gerçekleşen Birikim', fill='tozeroy', line=dict(color='#ff7f0e', width=2)))
+                            
+                            # Tahmin Kümülatif Çizgi (Altı Doldurulmuş ve Kesik Çizgili)
+                            fig_cum.add_trace(go.Scatter(x=forecast_cum_plot.index, y=forecast_cum_plot.values, mode='lines+markers', name='Tahmin Edilen Birikim', fill='tonexty', line=dict(color='#ffea00', width=3, dash='dot')))
+                            
+                            fig_cum.update_layout(template="plotly_dark", hovermode="x unified", yaxis_title="Toplam Vaka Sayısı")
+                            st.plotly_chart(fig_cum, use_container_width=True)
+                            
                     except: pass
 
             # ==========================================
