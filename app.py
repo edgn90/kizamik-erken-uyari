@@ -30,8 +30,8 @@ except ValueError:
 # Sayfa Ayarları
 st.set_page_config(page_title="Kızamık YZ Sürveyans Radarı", page_icon="🎯", layout="wide")
 
-st.title("🎯 Kızamık YZ Sürveyans Radarı (V10.7: Saf Kohort & Optimizasyon)")
-st.markdown("Nüfus/Koordinat altyapıları gömülüdür. Sistem 'Yıl' sütunu barındıran aşı dosyalarını otomatik pivotlar, Saf Kümülatif Riski hesaplar ve **Optimizasyon Motoru** ile maksimum isabeti hedefler.")
+st.title("🎯 Kızamık YZ Sürveyans Radarı (V10.8: Gelecek Projeksiyonlu)")
+st.markdown("Nüfus/Koordinat altyapıları gömülüdür. Sistem 'Yıl' sütunu barındıran aşı dosyalarını otomatik pivotlar, Saf Kümülatif Riski hesaplar ve Backtest modülünde gelecek aylar için radar simülasyonu sunar.")
 
 # --- 1. YÜKLEME VE AYAR MODÜLÜ (SIDEBAR) ---
 st.sidebar.header("📂 Aylık Dinamik Veri Yükleme")
@@ -502,46 +502,61 @@ if file_cases and file_vax:
                         st.info("💡 Sol menüdeki 'Vaka Yükü Ağırlığı' değerini önerilen yüzdelik dilime getirerek sistemi maksimum hassasiyete ayarlayabilirsiniz.")
                 
                 st.markdown("---")
-                st.markdown("### 🧪 Manuel Kör Test (Backtest)")
-                valid_months = pd.date_range(start=df_cases['Tarih'].min() + pd.DateOffset(months=6), end=latest_date, freq=FREQ_M).strftime('%Y-%m').tolist()
-                test_month_str = st.selectbox("Sınamak İstediğiniz Ayı Seçin:", valid_months[::-1])
+                st.markdown("### 🧪 Manuel Kör Test (Backtest) ve Gelecek Simülasyonu")
                 
-                if st.button("🚀 Seçili Ay İçin Kör Testi Başlat", type="primary"):
+                # Açılır menüye gelecek 6 ayı da dahil ediyoruz
+                future_end_date = latest_date + pd.DateOffset(months=6)
+                valid_months = pd.date_range(start=df_cases['Tarih'].min() + pd.DateOffset(months=6), end=future_end_date, freq=FREQ_M).strftime('%Y-%m').tolist()
+                test_month_str = st.selectbox("Sınamak / Simüle Etmek İstediğiniz Ayı Seçin:", valid_months[::-1])
+                
+                if st.button("🚀 Seçili Ay İçin Simülasyonu Başlat", type="primary"):
                     target_start = pd.to_datetime(test_month_str)
                     target_end = target_start + pd.offsets.MonthEnd(1)
                     context_end = target_start - pd.Timedelta(days=1)
                     
                     target_cases = df_cases[(df_cases['Tarih'] >= target_start) & (df_cases['Tarih'] <= target_end)].dropna(subset=['Lat', 'Lon']).copy()
                     
-                    if len(target_cases) > 0:
-                        context_cases = df_cases[df_cases['Tarih'] <= context_end].copy()
-                        predicted_df = calculate_risk_scores(context_cases, df_pop.copy(), df_vax.copy(), df_geo.copy(), context_end, w_case, w_vuln)
+                    # Her durumda (geçmiş veya gelecek) tahminleri hesapla
+                    context_cases = df_cases[df_cases['Tarih'] <= context_end].copy()
+                    predicted_df = calculate_risk_scores(context_cases, df_pop.copy(), df_vax.copy(), df_geo.copy(), context_end, w_case, w_vuln)
+                    
+                    top_test_ahb = predicted_df[predicted_df['Risk_Skoru'] >= risk_esigi].dropna(subset=['Lat', 'Lon'])
+                    
+                    if not top_test_ahb.empty:
+                        top_lats, top_lons = top_test_ahb['Lat'].values, top_test_ahb['Lon'].values
                         
-                        top_test_ahb = predicted_df[predicted_df['Risk_Skoru'] >= risk_esigi].dropna(subset=['Lat', 'Lon'])
-                        
-                        if not top_test_ahb.empty:
-                            top_lats, top_lons = top_test_ahb['Lat'].values, top_test_ahb['Lon'].values
+                        if len(target_cases) > 0:
+                            # Geçmiş ay seçilmişse isabet oranını hesapla
                             hits = sum(1 for _, r in target_cases.iterrows() if np.any(haversine_vectorized(r['Lat'], r['Lon'], top_lats, top_lons) <= 3.0))
-                            
                             st.success(f"✅ Risk Skoru {risk_esigi} Üzeri Olan Merkezlerle Yapılan Test Sonucu:")
                             c1, c2, c3 = st.columns(3)
                             c1.metric("Gerçekleşen Vaka", len(target_cases)); c2.metric("Radarımızın Yakaladığı", hits); c3.metric("İsabet Oranı", f"%{(hits/len(target_cases)*100):.1f}")
-                            
-                            fig_test = go.Figure()
-                            fig_test.add_trace(go.Scattermapbox(lat=top_lats, lon=top_lons, mode='markers', marker=dict(size=25, color='rgba(0, 255, 255, 0.3)'), hoverinfo='skip', name='3KM Radar Alanı'))
-                            
-                            hover_pred = (
-                                "<b>" + top_test_ahb['Kurum Adı'] + "</b><br>" +
-                                "📍 İlçe: " + top_test_ahb['İlçe'] + "<br>" +
-                                "🎯 Model Skoru: <b>" + top_test_ahb['Risk_Skoru'].astype(str) + "</b>"
-                            ).tolist()
-                            
-                            fig_test.add_trace(go.Scattermapbox(lat=top_lats, lon=top_lons, mode='markers', marker=dict(size=8, color='cyan'), text=hover_pred, hovertemplate="%{text}<extra></extra>", name='Tahmin Merkezleri'))
+                        else:
+                            # Gelecek ay seçilmişse (henüz vaka yoksa) sadece tahminleri göster
+                            st.warning(f"⚠️ **{test_month_str}** dönemi için sistemde henüz gerçekleşmiş vaka verisi bulunmuyor. Radardaki işaretler, mevcut vakaların zaman projeksiyonuyla ileriye taşınmış **tahmini risk merkezleridir**.")
+                            c1, c2, c3 = st.columns(3)
+                            c1.metric("Gerçekleşen Vaka", "Veri Yok"); c2.metric("Öngörülen Riskli Merkez", len(top_test_ahb)); c3.metric("İsabet Oranı", "Hesaplanamıyor")
+
+                        fig_test = go.Figure()
+                        fig_test.add_trace(go.Scattermapbox(lat=top_lats, lon=top_lons, mode='markers', marker=dict(size=25, color='rgba(0, 255, 255, 0.3)'), hoverinfo='skip', name='3KM Radar Alanı'))
+                        
+                        hover_pred = (
+                            "<b>" + top_test_ahb['Kurum Adı'] + "</b><br>" +
+                            "📍 İlçe: " + top_test_ahb['İlçe'] + "<br>" +
+                            "🎯 Model Skoru: <b>" + top_test_ahb['Risk_Skoru'].astype(str) + "</b>"
+                        ).tolist()
+                        
+                        fig_test.add_trace(go.Scattermapbox(lat=top_lats, lon=top_lons, mode='markers', marker=dict(size=8, color='cyan'), text=hover_pred, hovertemplate="%{text}<extra></extra>", name='Tahmin Merkezleri'))
+                        
+                        # Varsa gerçekleşen vakaları haritaya ekle
+                        if len(target_cases) > 0:
                             fig_test.add_trace(go.Scattermapbox(lat=[r['Lat'] for _, r in target_cases.iterrows() if np.any(haversine_vectorized(r['Lat'], r['Lon'], top_lats, top_lons) <= 3.0)], lon=[r['Lon'] for _, r in target_cases.iterrows() if np.any(haversine_vectorized(r['Lat'], r['Lon'], top_lats, top_lons) <= 3.0)], mode='markers', marker=dict(size=8, color='#00ff00'), name='Yakalanan Vakalar (Başarı)'))
                             fig_test.add_trace(go.Scattermapbox(lat=[r['Lat'] for _, r in target_cases.iterrows() if not np.any(haversine_vectorized(r['Lat'], r['Lon'], top_lats, top_lons) <= 3.0)], lon=[r['Lon'] for _, r in target_cases.iterrows() if not np.any(haversine_vectorized(r['Lat'], r['Lon'], top_lats, top_lons) <= 3.0)], mode='markers', marker=dict(size=8, color='#ff0000'), name='Kaçan Vakalar (Hata)'))
-                                                                       
-                            fig_test.update_layout(mapbox_style="carto-darkmatter", mapbox_center_lon=28.97, mapbox_center_lat=41.05, mapbox_zoom=9.5, margin={"r":0,"t":0,"l":0,"b":0}, legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
-                            st.plotly_chart(fig_test, use_container_width=True)
+                                                                   
+                        fig_test.update_layout(mapbox_style="carto-darkmatter", mapbox_center_lon=28.97, mapbox_center_lat=41.05, mapbox_zoom=9.5, margin={"r":0,"t":0,"l":0,"b":0}, legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
+                        st.plotly_chart(fig_test, use_container_width=True)
+                    else:
+                        st.info(f"Bu dönem ({test_month_str}) için Risk Eşiğini ({risk_esigi}) aşan herhangi bir merkez öngörülmedi.")
 
             # ==========================================
             # TAB 5: RİSK HESAPLAMA REHBERİ
